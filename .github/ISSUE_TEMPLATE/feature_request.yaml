@@ -1,0 +1,35 @@
+name: Feature Request
+description: Suggest a new feature
+labels: [enhancement]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Clear description of the feature
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: Why is this feature needed?
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: How should this be implemented?
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Core
+        - TrainerClient
+        - OptimizerClient
+        - ModelRegistryClient
+        - CLI
+        - Documentation
