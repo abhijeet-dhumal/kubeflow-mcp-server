@@ -25,6 +25,11 @@ dependencies = [
 trainer = ["kubeflow>=0.4.0"]
 optimizer = ["kubeflow>=0.4.0"]
 hub = ["kubeflow>=0.4.0", "model-registry>=0.3.6"]
+agents = [
+    "llama-index-core>=0.12",
+    "llama-index-llms-ollama>=0.4",
+    "rich>=13.0",
+]
 all = ["kubeflow>=0.4.0"]
 dev = [
     "pytest>=8.0",
