@@ -1,24 +1,32 @@
 ## Description
 
-<!-- Brief description of changes -->
+<!-- What does this PR do? -->
+
+## Related Issue
+
+<!-- Link to the issue this PR addresses -->
+Fixes #
 
 ## Type of Change
 
-- [ ] feat: New feature
-- [ ] fix: Bug fix
-- [ ] docs: Documentation
-- [ ] refactor: Code refactoring
-- [ ] test: Tests
-- [ ] ci: CI/CD changes
+- [ ] Bug fix (non-breaking change which fixes an issue)
+- [ ] New feature (non-breaking change which adds functionality)
+- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
+- [ ] Documentation update
 
 ## Checklist
 
-- [ ] Tests pass locally (`uv run pytest`)
-- [ ] Linting passes (`uv run ruff check .`)
-- [ ] Types check (`uv run mypy src/`)
-- [ ] Documentation updated (if applicable)
-- [ ] Commit messages follow conventional format
+- [ ] I have read the [CONTRIBUTING](../CONTRIBUTING.md) guide
+- [ ] My code follows the project's style guidelines
+- [ ] I have added tests that prove my fix is effective or that my feature works
+- [ ] I have updated the documentation accordingly
+- [ ] My commits are signed off (`git commit -s`)
 
-## Related Issues
+## Testing
 
-<!-- Link related issues: Fixes #123 -->
+<!-- How was this tested? -->
+
+```bash
+uv run pytest
+uv run ruff check .
+```

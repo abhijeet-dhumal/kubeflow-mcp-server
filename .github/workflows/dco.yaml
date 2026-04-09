@@ -1,0 +1,64 @@
+# Developer Certificate of Origin (DCO) — verify Signed-off-by on PR commits.
+# Kubeflow SDK (.github in kubeflow/sdk) does not ship a GitHub DCO workflow; it relies
+# on org/process elsewhere. This workflow is the GitHub-native gate for kubeflow/mcp-server.
+
+name: DCO
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signoff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add base "${{ github.event.pull_request.base.repo.clone_url }}"
+          git fetch base "${{ github.event.pull_request.base.ref }}"
+          base_branch="base/${{ github.event.pull_request.base.ref }}"
+          base_sha=$(git merge-base "$base_branch" HEAD)
+
+          echo "Merge-base with ${{ github.event.pull_request.base.label }}: $base_sha"
+
+          missing=()
+          while IFS= read -r commit; do
+            [[ -z "$commit" ]] && continue
+            # Merge commits already excluded by rev-list --no-merges
+            if ! git show -s --format=%B "$commit" | grep -qiE '^Signed-off-by:'; then
+              missing+=("$commit")
+            fi
+          done < <(git rev-list --no-merges "${base_sha}"..HEAD)
+
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::One or more commits are missing a Signed-off-by trailer."
+            echo "Fix with: git commit -s  or  git rebase HEAD~N --signoff"
+            echo "See CONTRIBUTING.md (Developer Certificate of Origin)."
+            for c in "${missing[@]}"; do
+              git show -s --format='%h %s' "$c"
+            done
+            exit 1
+          fi
+
+          count=$(git rev-list --count --no-merges "${base_sha}"..HEAD)
+          echo "DCO OK: ${count} commit(s) include Signed-off-by."
