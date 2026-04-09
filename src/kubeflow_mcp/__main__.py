@@ -1,4 +1,4 @@
-# Copyright 2026 The Kubeflow Authors
+# Copyright 2026 The Kubeflow Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Kubeflow OptimizerClient MCP tools — stub, ready for contributors."""
+"""Entry point for python -m kubeflow_mcp."""
 
-TOOLS: list = []
+from kubeflow_mcp.cli import cli
 
-MODULE_INFO = {
-    "name": "optimizer",
-    "status": "stub",
-    "description": "Kubeflow Katib hyperparameter optimization tools (contributors welcome)",
-    "tool_count": 0,
-}
+if __name__ == "__main__":
+    cli()

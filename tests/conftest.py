@@ -12,33 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pytest configuration."""
+"""Pytest configuration and shared fixtures."""
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _reset_trainer_client_cache():
-    """Clear :func:`get_trainer_client` LRU cache so tests never share a real cluster client.
+    """Clear all LRU-cached SDK/K8s clients before and after every test.
 
-    Patches replace symbols on modules, but unpatching restores the original cached
-    wrapper; without clearing, a prior test can leave a real ``TrainerClient`` in the
-    cache and cause flakes or hangs (e.g. follow-on tests that expect mocks).
-
-    No-ops gracefully on the skeleton branch where utils doesn't exist yet.
+    Without this, @lru_cache on get_trainer_client() and _get_api_client()
+    preserves mock objects from one test into the next, causing order-dependent
+    failures (e.g. a test that primes the cache with a mock client pointing at
+    localhost:80 breaks later tests that expect load_config() to be called).
     """
-    try:
-        from kubeflow_mcp.common.utils import reset_clients
-    except ImportError:
-        yield
-        return
+    from kubeflow_mcp.common.utils import reset_clients
 
     reset_clients()
     yield
     reset_clients()
-
-
-@pytest.fixture
-def mock_k8s_client():
-    """Mock Kubernetes client for testing."""
-    return None

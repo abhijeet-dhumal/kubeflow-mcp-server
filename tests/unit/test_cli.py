@@ -1,9 +1,21 @@
+# Copyright 2026 The Kubeflow Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Test CLI commands."""
 
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
 from click.testing import CliRunner
 
 from kubeflow_mcp.cli import cli
@@ -16,10 +28,6 @@ def test_cli_version():
     assert "0.1.0-dev" in result.output
 
 
-@pytest.mark.xfail(
-    reason="status command imports core.server which ships in PR #2, not the skeleton",
-    strict=True,
-)
 def test_status_command():
     runner = CliRunner()
     result = runner.invoke(cli, ["status"])
@@ -28,10 +36,6 @@ def test_status_command():
     assert "implemented" in result.output
 
 
-@pytest.mark.xfail(
-    reason="status command imports core.server which ships in PR #2, not the skeleton",
-    strict=True,
-)
 def test_status_shows_stubs():
     runner = CliRunner()
     result = runner.invoke(cli, ["status"])
@@ -56,7 +60,7 @@ def test_serve_rejects_invalid_transport():
     assert "invalid choice" in result.output.lower() or "websocket" in result.output
 
 
-# --- serve: wiring —-- create_server receives correct args, server.run is called ---
+# --- serve: wiring — create_server receives correct args, server.run is called ---
 
 
 def _make_serve_mocks():
