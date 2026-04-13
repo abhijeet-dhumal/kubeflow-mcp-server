@@ -1,7 +1,5 @@
 # Compatibility Matrix
 
-## Version Support
-
 | MCP Server | Kubeflow SDK | Python      | Kubernetes |
 |------------|-------------|-------------|------------|
 | 0.1.x      | ≥ 0.4.0     | 3.10 – 3.12 | ≥ 1.27     |

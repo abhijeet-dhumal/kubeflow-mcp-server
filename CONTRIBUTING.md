@@ -1,20 +1,26 @@
 # Contributing to Kubeflow MCP Server
 
-Thank you for your interest in contributing!
+Thank you for your interest in contributing! Checkout the general Kubeflow contributing guidelines [here](https://www.kubeflow.org/docs/about/contributing/).
+
+We encourage the judicious use of AI/LLM tools; please refer to the [Kubeflow AI Policy](https://www.kubeflow.org/docs/about/ai_policy/) for more information.
+
+## Requirements
+- [Supported Python version](./pyproject.toml)
+- [pre-commit](https://pre-commit.com/)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ## Getting Started
 
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/<your-username>/mcp-server.git
-   cd mcp-server
+   git clone https://github.com/<your-username>/kubeflow-mcp-server.git
+   cd kubeflow-mcp-server
    ```
 
 3. Set up development environment:
    ```bash
-   uv sync --all-extras
-   uv run pre-commit install
+   make install-dev
    ```
 
 4. Create a branch:
@@ -22,25 +28,35 @@ Thank you for your interest in contributing!
    git checkout -b feat/your-feature
    ```
 
-## Development Workflow
+## Development
 
-### Running Tests
+The Kubeflow MCP Server project includes a `Makefile` with several helpful commands to streamline your development workflow.
+
+### Coding Style
+
+Before creating git commits, ensure you have installed pre-commit hooks:
+
 ```bash
-uv run pytest                    # All tests
-uv run pytest tests/unit         # Unit tests only
-uv run pytest -k "test_name"     # Specific test
+uv run pre-commit install
 ```
 
-### Linting
+The pre-commit hooks ensure code quality and consistency (linting with `ruff`, type checking with `mypy`). They are also executed in CI.
+
+To run verification checks locally:
+
 ```bash
-uv run ruff check .              # Check
-uv run ruff check . --fix        # Auto-fix
-uv run ruff format .             # Format
+make verify
 ```
 
-### Type Checking
+## Testing
+
+The project includes unit tests to ensure code quality and functionality.
+
+### Unit Testing
+To run unit tests locally, use the following `make` command:
+
 ```bash
-uv run mypy src/
+make test-python
 ```
 
 ## Commit Messages
@@ -63,7 +79,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 ## Pull Request Process
 
 1. Update tests for your changes
-2. Ensure all checks pass
+2. Ensure all checks pass (`make verify` and `make test-python`)
 3. Update documentation if needed
 4. Request review from maintainers
 
@@ -80,4 +96,4 @@ This project follows the [Kubeflow Code of Conduct](https://github.com/kubeflow/
 
 ## Questions?
 
-Open an issue or reach out to maintainers.
+Open an issue or reach out to maintainers on the CNCF Slack `#kubeflow-ml-experience` channel.

@@ -4,7 +4,7 @@ AI-powered interface for Kubeflow Training via [Model Context Protocol](https://
 
 Proposal: https://github.com/kubeflow/community/tree/master/proposals/936-kubeflow-mcp-server
 
-> ⚠️ **Note:** This project is in early development. We currently accept PRs only after prior discussion on Slack — join `#kubeflow-ml-experience` on the [CNCF Slack](https://www.kubeflow.org/docs/about/community/).
+> ⚠️ **Note:** This project is in early development. We currently accept PRs only after prior discussion on Slack — join `#kubeflow-ml-experience` on the [CNCF Slack](https://www.kubeflow.org/docs/about/community/). For more discussion, join on bi-weekly ML Experience WG call on Wednesdays.
 
 ## Overview
 
@@ -12,11 +12,9 @@ This MCP server enables LLM agents (Claude, Cursor, etc.) to interact with Kubef
 
 ## Compatibility
 
-| MCP Server | Kubeflow SDK | Python   |
-|------------|-------------|----------|
-| 0.1.x      | ≥ 0.4.0     | 3.10 – 3.12 |
-
-See [COMPATIBILITY.md](COMPATIBILITY.md) for the full SDK API coverage matrix.
+| MCP Server | Kubeflow SDK | Python      | Kubernetes |
+|------------|-------------|-------------|------------|
+| 0.1.x      | ≥ 0.4.0     | 3.10 – 3.12 | ≥ 1.27     |
 
 ## Status
 
@@ -42,19 +40,17 @@ kubeflow-mcp serve --clients trainer
 
 ## Development
 
+The project uses `uv` and a `Makefile` to manage the development environment.
+
 ```bash
-# Clone
-git clone https://github.com/kubeflow/mcp-server.git
-cd mcp-server
+# Setup development environment
+make install-dev
 
-# Setup
-uv sync --all-extras
+# Run verification (lint, format, type-check)
+make verify
 
-# Test
-uv run pytest
-
-# Lint
-uv run ruff check .
+# Run unit tests
+make test-python
 ```
 
 ## Contributing
