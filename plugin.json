@@ -1,0 +1,9 @@
+{
+  "name": "kubeflow-mcp",
+  "version": "0.1.0-dev",
+  "description": "AI-assisted Kubeflow training — fine-tune models, run distributed training, and monitor jobs through natural language",
+  "author": "Kubeflow Authors",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/kubeflow/mcp-server",
+  "repository": "https://github.com/kubeflow/mcp-server"
+}
