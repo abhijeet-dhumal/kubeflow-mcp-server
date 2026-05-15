@@ -41,10 +41,16 @@ from kubeflow_mcp.core.health import (
     HEALTH_TOOLS,
 )
 from kubeflow_mcp.core.logging import with_correlation_id
-from kubeflow_mcp.core.policy import apply_policy_filters, get_allowed_tools, is_read_only
+from kubeflow_mcp.core.policy import (
+    apply_policy_filters,
+    get_allowed_tools,
+    get_effective_persona,
+    is_read_only,
+)
 from kubeflow_mcp.core.resilience import RateLimiter, get_breaker
 from kubeflow_mcp.core.resources import register_resources
 from kubeflow_mcp.core.security import mask_sensitive_data
+from kubeflow_mcp.core.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
