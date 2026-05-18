@@ -34,3 +34,7 @@ docs/_build/
 # Virtual environments
 .venv/
 venv/
+
+
+# benchmarks
+benchmark-results/
