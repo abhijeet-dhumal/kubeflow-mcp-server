@@ -52,6 +52,15 @@ from kubeflow_mcp.core.resources import register_resources
 from kubeflow_mcp.core.security import mask_sensitive_data
 from kubeflow_mcp.core.telemetry import get_tracer
 
+try:
+    from opentelemetry.trace import SpanKind
+    from opentelemetry.trace import Status as _Status
+    from opentelemetry.trace import StatusCode as _StatusCode
+except ImportError:  # pragma: no cover
+    SpanKind = None  # type: ignore[assignment,misc]
+    _Status = None  # type: ignore[assignment,misc]
+    _StatusCode = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 _rate_limiter: RateLimiter | None = None
