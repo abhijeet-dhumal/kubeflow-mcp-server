@@ -76,6 +76,17 @@ Optional: `--url` for Ollama base URL; `--thinking` toggles reasoning-friendly m
 3. Split Ollama REPL helpers to satisfy complexity limits.
 4. Add `examples/agents/` and optional `examples/deployment/litellm-gateway/` notes.
 
+## Current status and Phase-2
+
+This document captures the original provider split and registry architecture.
+The current runtime has evolved with LiteLLM + framework wrappers and shared
+helper layers. For the production-hardening Phase-2 design (shared runtime
+core, thin adapters, unified event contract, structured logging, and tracing),
+see:
+
+- [`litellm-agent-redesign.md`](./litellm-agent-redesign.md), section
+  **Phase-2 E2E Proposal**
+
 ## References
 
 - [Model Context Protocol](https://modelcontextprotocol.io/)

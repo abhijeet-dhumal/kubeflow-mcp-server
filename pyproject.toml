@@ -39,34 +39,108 @@ dev = [
 default-groups = ["dev"]
 
 [project.optional-dependencies]
-hub = ["kubeflow[hub]>=0.4.0"]
+# ── Kubeflow SDK extras ────────────────────────────────────────────────────────
+hub   = ["kubeflow[hub]>=0.4.0"]
 spark = ["kubeflow[spark]>=0.4.0"]
-# CLI agent: install only what you need (Ollama vs LiteLLM).
-agents-ollama = [
-    "llama-index-core>=0.12",
-    "llama-index-llms-ollama>=0.4",
-    "rich>=13.0",
-]
+
+# ── Single-framework agent extras ─────────────────────────────────────────────
+# Pick exactly ONE. Each is self-contained (litellm + rich + one framework).
+#
+# Install size guidance (approximate transitive total):
+#   agents-litellm   ~  10 MB   native loop, no framework adapter
+#   agents-langchain ~ 160 MB   ReAct agent via LangChain
+#   agents-smolagents ~  35 MB  HuggingFace smolagents
+#   agents-llamaindex ~  60 MB  LlamaIndex workflows
+
 agents-litellm = [
+    # Lightest option — native LiteLLM agentic loop, no framework required.
     "litellm>=1.0",
     "rich>=13.0",
 ]
-# All agent backends (convenience; same as agents-ollama + agents-litellm deps).
-agents = [
+agents-langchain = [
+    # LangChain ReAct agent. langchain-classic provides AgentExecutor, Tool,
+    # create_react_agent, ConversationBufferMemory (pre-0.1 API, stable).
+    # langchain-community is NOT required by this codebase — omitted intentionally.
+    "litellm>=1.0",
+    "rich>=13.0",
+    "langchain-classic>=1.0",
+    "langchain-core>=0.3",
+    "langchain-litellm>=0.3",
+]
+agents-smolagents = [
+    "litellm>=1.0",
+    "rich>=13.0",
+    "smolagents>=1.0",
+]
+agents-llamaindex = [
+    "litellm>=1.0",
+    "rich>=13.0",
     "llama-index-core>=0.12",
-    "llama-index-llms-ollama>=0.4",
-    "rich>=13.0",
-    "litellm>=1.0",
+    "llama-index-llms-litellm>=0.3",
 ]
-all = ["kubeflow[hub]>=0.4.0", "kubeflow[spark]>=0.4.0"]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=4.0",
-    "pytest-benchmark>=4.0",
-    "ruff>=0.9",
-    "mypy>=1.10",
-    "pip-audit>=2.7",
+
+# ── Observability add-ons (framework-agnostic, compose freely) ────────────────
+# These stack on top of any single-framework extra.
+# Example: uv sync --extra agents-langchain --extra agents-obs --extra agents-otel
+
+agents-obs = [
+    # MLflow experiment tracking + Langfuse LLM session replay.
+    # mlflow>=2.16 required for OTLP trace ingestion from OTel collector.
+    "langfuse>=2.0",
+    "mlflow>=2.16",
+]
+agents-otel = [
+    # OpenTelemetry spans → OTel Collector → Jaeger / Prometheus / MLflow.
+    # Uses HTTP exporter (lighter than gRPC — no grpcio C extension).
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+
+# ── Convenience bundles ───────────────────────────────────────────────────────
+agents-litellm-obs = [
+    # Default CLAUDE.md workflow: native litellm loop + full observability stack.
+    # Equivalent to: agents-litellm + agents-obs + agents-otel
+    "litellm>=1.0",
+    "rich>=13.0",
+    "langfuse>=2.0",
+    "mlflow>=2.16",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+
+# ── Dev / CI ──────────────────────────────────────────────────────────────────
+agents = [
+    # ALL framework adapters in one extra. For development and CI only.
+    # Production deployments should install only the specific framework needed.
+    "litellm>=1.0",
+    "rich>=13.0",
+    "langchain-classic>=1.0",
+    "langchain-core>=0.3",
+    "langchain-litellm>=0.3",
+    "smolagents>=1.0",
+    "llama-index-core>=0.12",
+    "llama-index-llms-litellm>=0.3",
+]
+all = [
+    # Complete install including Kubeflow SDK extras + all agents + full obs.
+    # Expect ~400 MB of transitive dependencies.
+    "kubeflow[hub]>=0.4.0",
+    "kubeflow[spark]>=0.4.0",
+    "litellm>=1.0",
+    "rich>=13.0",
+    "langchain-classic>=1.0",
+    "langchain-core>=0.3",
+    "langchain-litellm>=0.3",
+    "smolagents>=1.0",
+    "llama-index-core>=0.12",
+    "llama-index-llms-litellm>=0.3",
+    "langfuse>=2.0",
+    "mlflow>=2.16",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 docs = [
     "sphinx>=7.0",
@@ -79,7 +153,6 @@ docs = [
 kubeflow-mcp = "kubeflow_mcp.cli:cli"
 
 [project.entry-points."kubeflow_mcp.providers"]
-ollama = "kubeflow_mcp.agents.ollama:OllamaProvider"
 litellm = "kubeflow_mcp.agents.litellm_provider:LiteLLMProvider"
 
 [build-system]

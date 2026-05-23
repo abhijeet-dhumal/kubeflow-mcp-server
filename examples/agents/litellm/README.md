@@ -6,4 +6,4 @@ Install `uv sync --extra agents-litellm` (or `agents`), set `OPENAI_API_KEY` (or
 uv run python examples/agents/litellm/run.py --model gpt-4o-mini
 ```
 
-This is a minimal chat loop. For full Kubeflow tool calling, use `--provider ollama` today.
+This is a minimal chat loop. For full Kubeflow tool calling, use `kubeflow-mcp agent --provider litellm`.

@@ -32,7 +32,7 @@ except ImportError:
     if not _SPHINX_BUILD:
         sys.exit(
             "Error: required packages not installed\n"
-            "Run: uv sync --extra agents-ollama   # or agents-litellm, or agents for all backends"
+            "Run: uv sync --extra agents-litellm   # or agents for all backends"
         )
     Console = None  # type: ignore[misc, assignment]
     Markdown = None  # type: ignore[misc, assignment]
@@ -133,6 +133,35 @@ def print_tool_result_panel(c: Console, result_text: str) -> None:
             padding=(0, 1),
         )
     )
+
+
+def print_tool_call_panel(c: Console, tool_name: str, args: dict[str, Any]) -> None:
+    body = json.dumps(args, indent=2, default=str)
+    c.print()
+    c.print(
+        Panel(
+            Text(body, style="bright_yellow"),
+            title=f"[bold bright_yellow]⚙  Tool: {tool_name}[/bold bright_yellow]",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+
+
+def print_tools_table(
+    c: Console,
+    tools: list[tuple[str, str]],
+    *,
+    header_style: str = "bold cyan",
+    title: str = "Active Tools",
+) -> None:
+    table = Table(title=title, show_header=True, header_style=header_style)
+    table.add_column("Tool", style="bright_white", no_wrap=True)
+    table.add_column("Description", style="dim")
+    for tool_name, description in tools:
+        table.add_row(tool_name, description[:90])
+    c.print()
+    c.print(table)
 
 
 def format_tool_result_display(result: Any, max_lines: int = 15) -> str:

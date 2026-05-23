@@ -22,24 +22,29 @@ from kubeflow_mcp.agents.base import AgentProvider
 
 __all__ = [
     "AgentProvider",
+    "LiteLLMAgent",
     "LiteLLMProvider",
-    "OllamaAgent",
-    "OllamaProvider",
+    "LoopState",
+    "build_tool_schema",
 ]
 
 
 def __getattr__(name: str):
-    if name == "OllamaProvider":
-        from kubeflow_mcp.agents.ollama import OllamaProvider as _OllamaProvider
-
-        return _OllamaProvider
-    if name == "OllamaAgent":
-        from kubeflow_mcp.agents.ollama import OllamaAgent as _OllamaAgent
-
-        return _OllamaAgent
     if name == "LiteLLMProvider":
         from kubeflow_mcp.agents.litellm_provider import LiteLLMProvider as _LiteLLMProvider
 
         return _LiteLLMProvider
+    if name == "LiteLLMAgent":
+        from kubeflow_mcp.agents.litellm_agent import LiteLLMAgent as _LiteLLMAgent
+
+        return _LiteLLMAgent
+    if name == "LoopState":
+        from kubeflow_mcp.agents.litellm_agent import LoopState as _LoopState
+
+        return _LoopState
+    if name == "build_tool_schema":
+        from kubeflow_mcp.agents.litellm_agent import build_tool_schema as _build_tool_schema
+
+        return _build_tool_schema
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

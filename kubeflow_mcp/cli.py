@@ -201,6 +201,33 @@ def status() -> None:
             click.echo(f"  {name}: not installed")
 
 
+def _is_local_agent(*, provider: str, model: str | None, base_url: str | None) -> bool:
+    """True when the agent talks to local Ollama (not cloud APIs)."""
+    if base_url:
+        host = base_url.lower()
+        if "localhost" in host or "127.0.0.1" in host:
+            return True
+    if model:
+        lowered = model.lower()
+        if lowered.startswith("ollama/") or lowered.startswith("ollama_chat/"):
+            return True
+    return provider == "litellm" and model is None
+
+
+def _resolve_agent_mode(
+    mode: str | None,
+    *,
+    provider: str,
+    model: str,
+    base_url: str | None,
+) -> str:
+    if mode is not None:
+        return mode
+    if _is_local_agent(provider=provider, model=model, base_url=base_url):
+        return "progressive"
+    return "full"
+
+
 def _provider_entry_point_map() -> dict[str, Any]:
     from importlib.metadata import entry_points
 
@@ -213,7 +240,7 @@ def _provider_entry_point_map() -> dict[str, Any]:
 @click.option(
     "--provider",
     "-p",
-    default="ollama",
+    default="litellm",
     help="Agent provider (see entry-points group kubeflow_mcp.providers)",
 )
 @click.option(
@@ -224,21 +251,68 @@ def _provider_entry_point_map() -> dict[str, Any]:
 )
 @click.option(
     "--mode",
-    default="full",
+    default=None,
     type=click.Choice(["full", "progressive", "semantic"]),
-    help="Tool loading mode: same choices as serve --mode (ollama; ignored by minimal providers)",
+    help="Tool loading mode (default: progressive for local Ollama, full for cloud)",
 )
 @click.option(
     "--thinking/--no-thinking",
-    default=False,
-    help="Enable thinking output for supported models (ollama)",
+    default=True,
+    help="Enable extended thinking for supported models (default: on; use --no-thinking to disable)",
 )
 @click.option(
-    "--url",
+    "--base-url",
     default=None,
-    help="Ollama base URL (ollama provider only; default http://localhost:11434)",
+    help="LiteLLM base URL for on-prem proxy or local endpoint (litellm provider only)",
 )
-def agent(provider: str, model: str | None, mode: str, thinking: bool, url: str | None) -> None:
+@click.option(
+    "--fallback-model",
+    default=None,
+    help="Secondary LiteLLM model tried when primary fails (litellm provider only)",
+)
+@click.option(
+    "--cache/--no-cache",
+    default=False,
+    help="Enable LiteLLM semantic cache — Redis if REDIS_URL is set, else in-memory",
+)
+@click.option(
+    "--langfuse/--no-langfuse",
+    default=False,
+    help="Enable Langfuse LLM tracing (requires LANGFUSE_SECRET_KEY + LANGFUSE_PUBLIC_KEY env vars)",
+)
+@click.option(
+    "--mlflow-uri",
+    default=None,
+    help="Enable MLflow callback and set tracking URI (e.g. http://localhost:5000)",
+)
+@click.option(
+    "--framework",
+    default="langchain",
+    type=click.Choice(["langchain", "smolagents", "llamaindex", "litellm"]),
+    help="Agent framework (default: langchain; litellm = legacy native loop)",
+)
+@click.option(
+    "--otel-endpoint",
+    default=None,
+    help=(
+        "OTLP HTTP endpoint for OTel traces, e.g. http://localhost:4318. "
+        "Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var. "
+        "Run deploy/otel/docker-compose.yml to start a local collector."
+    ),
+)
+def agent(
+    provider: str,
+    model: str | None,
+    mode: str,
+    thinking: bool,
+    base_url: str | None,
+    fallback_model: str | None,
+    cache: bool,
+    langfuse: bool,
+    mlflow_uri: str | None,
+    framework: str,
+    otel_endpoint: str | None,
+) -> None:
     """Run an interactive AI agent backed by a registered provider."""
     eps = _provider_entry_point_map()
     if provider not in eps:
@@ -253,10 +327,26 @@ def agent(provider: str, model: str | None, mode: str, thinking: bool, url: str 
         raise SystemExit(1) from None
 
     instance = provider_cls()
-    kwargs: dict[str, Any] = {"thinking": thinking}
-    if url is not None:
-        kwargs["url"] = url
-    instance.run(model=model or instance.default_model, mode=mode, **kwargs)
+    resolved_model = model or instance.default_model
+    resolved_mode = _resolve_agent_mode(
+        mode,
+        provider=provider,
+        model=resolved_model,
+        base_url=base_url,
+    )
+    kwargs: dict[str, Any] = {
+        "thinking": thinking,
+        "cache": cache,
+        "langfuse": langfuse,
+        "mlflow_uri": mlflow_uri,
+        "framework": framework,
+        "otel_endpoint": otel_endpoint,
+    }
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if fallback_model is not None:
+        kwargs["fallback_model"] = fallback_model
+    instance.run(model=resolved_model, mode=resolved_mode, **kwargs)
 
 
 if __name__ == "__main__":

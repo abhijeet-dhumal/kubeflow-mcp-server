@@ -329,6 +329,7 @@ INSTRUCTION_SECTIONS: dict[str, dict[str, str]] = {
         "full": """\
 PLANNING (always do first):
 - pre_flight(model="<model>") -> One call: compatibility + cluster + estimate + runtimes
+- pre_flight model must be a HuggingFace ID (e.g. google/gemma-2-2b), not an Ollama chat tag (e.g. gemma4:e4b)
 - If blockers returned, STOP and inform user
 - If gpu_total=0 -> fine_tune() will NOT work (torchtune needs GPUs). Use run_custom_training() with gloo backend instead
 - Individual tools (check_compatibility, get_cluster_resources, estimate_resources) available for targeted re-checks

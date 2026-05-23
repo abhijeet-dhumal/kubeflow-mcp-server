@@ -30,17 +30,16 @@ pip install .
 
 ### Optional: interactive `kubeflow-mcp agent` (local LLM)
 
-Extras are split so you do not need LiteLLM for the Ollama agent:
+Agent extras:
 
 | Extra | Installs |
 |-------|----------|
-| `agents-ollama` | LlamaIndex + Ollama + Rich (default for `--provider ollama`) |
 | `agents-litellm` | LiteLLM + Rich (`--provider litellm`) |
-| `agents` | Both (convenience) |
+| `agents` | LiteLLM + framework adapters (convenience) |
 
 ```bash
-uv sync --extra agents-ollama
-# or: pip install 'kubeflow-mcp[agents-ollama]'
+uv sync --extra agents-litellm
+# or: pip install 'kubeflow-mcp[agents-litellm]'
 ```
 
 ### Run the server
@@ -172,10 +171,10 @@ Without auth configured, the server logs a warning that the HTTP endpoint is ope
 
 ```bash
 kubeflow-mcp agent \
-  --provider ollama \             # ollama | litellm (entry-point registry)
-  --model qwen3:8b \              # model name (provider default if omitted)
+  --provider litellm \            # provider entry-point registry
+  --model ollama/qwen3:8b \       # or gpt-4.1 / claude-3-5-sonnet, etc.
   --mode full \                   # full (default) | progressive | semantic — same as serve --mode
-  --thinking                      # enable thinking output (ollama; supported models)
+  --thinking                      # enable thinking output (supported models)
 ```
 
 </details>

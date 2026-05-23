@@ -31,11 +31,37 @@ logger = logging.getLogger(__name__)
 _HF_MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 
 
+def _suggest_hf_model_ids(raw: str, *, limit: int = 3) -> list[str]:
+    """Best-effort suggestions for invalid model identifiers."""
+    query = raw.removeprefix("hf://").strip()
+    if ":" in query:
+        query = query.split(":", 1)[0]
+    query = re.sub(r"\d+$", "", query).strip("-_./")
+    if not query:
+        return []
+    try:
+        from huggingface_hub import list_models
+
+        matches = list_models(search=query, limit=limit, full=False)
+    except Exception:
+        return []
+    suggestions: list[str] = []
+    for model in matches:
+        model_id = getattr(model, "id", None)
+        if isinstance(model_id, str) and _HF_MODEL_ID_RE.match(model_id):
+            suggestions.append(model_id)
+    return suggestions
+
+
 def _get_model_info_from_hf(model: str) -> dict[str, Any] | None:
     """Fetch model info from HuggingFace Hub."""
     try:
         if not _HF_MODEL_ID_RE.match(model):
-            return {"error": f"Invalid HuggingFace model ID format: '{model}'"}
+            result: dict[str, Any] = {"error": f"Invalid HuggingFace model ID format: '{model}'"}
+            suggestions = _suggest_hf_model_ids(model)
+            if suggestions:
+                result["suggestions"] = suggestions
+            return result
 
         from huggingface_hub import model_info
 
@@ -476,10 +502,15 @@ def estimate_resources(
 
         if not hf_info or "error" in hf_info:
             error_msg = hf_info.get("error", "Unknown error") if hf_info else "API failed"
+            hint = "Ensure model path is correct (e.g., 'meta-llama/Llama-3.2-1B')"
+            suggestions = hf_info.get("suggestions") if hf_info else None
+            if suggestions:
+                hint = f"{hint}; try: {', '.join(suggestions)}"
             return ToolError(
                 error=f"Could not fetch model info from HuggingFace: {error_msg}",
                 error_code=ErrorCode.SDK_ERROR,
-                details={"hint": "Ensure model path is correct (e.g., 'meta-llama/Llama-3.2-1B')"},
+                hint=hint,
+                details={"suggestions": suggestions} if suggestions else None,
             ).model_dump()
 
         params = hf_info.get("params")
@@ -522,6 +553,31 @@ def estimate_resources(
             error_code=ErrorCode.SDK_ERROR,
             details=exception_details(e),
         ).model_dump()
+
+
+def _merge_estimate_result(
+    *,
+    result: dict[str, Any],
+    next_steps: list[str],
+    estimate_response: dict[str, Any],
+) -> None:
+    """Attach estimate payload + explicit status fields for pre_flight summaries."""
+    estimate_data = estimate_response.get("data", estimate_response)
+    result["estimate"] = estimate_data
+    has_error = (
+        isinstance(estimate_data, dict)
+        and (estimate_data.get("success") is False or estimate_data.get("error"))
+    )
+    if not has_error:
+        result["estimate_status"] = "ok"
+        return
+
+    result["estimate_status"] = "error"
+    result["estimate_error"] = str(estimate_data.get("error", "estimate failed"))
+    hint = estimate_data.get("hint")
+    if hint:
+        result["estimate_hint"] = str(hint)
+    next_steps.append(f"Estimate failed: {result['estimate_error']}")
 
 
 def pre_flight(
@@ -596,8 +652,7 @@ def pre_flight(
             batch_size=batch_size,
             quantization=quantization,
         )
-        estimate_data = estimate.get("data", estimate)
-        result["estimate"] = estimate_data
+        _merge_estimate_result(result=result, next_steps=next_steps, estimate_response=estimate)
 
     from kubeflow_mcp.trainer.api.discovery import list_runtimes as _list_runtimes
 

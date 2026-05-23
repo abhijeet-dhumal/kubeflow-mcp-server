@@ -408,7 +408,7 @@ def test_agent_unknown_provider():
     result = runner.invoke(cli, ["agent", "--provider", "nonexistent-xyz"])
     assert result.exit_code == 1
     assert "Unknown provider" in result.output
-    assert "ollama" in result.output or "litellm" in result.output
+    assert "litellm" in result.output
 
 
 def test_agent_invokes_registered_provider():
@@ -431,10 +431,10 @@ def test_agent_invokes_registered_provider():
     call_kw = mock_provider.run.call_args.kwargs
     assert call_kw["model"] == "m1"
     assert call_kw["mode"] == "full"
-    assert call_kw["thinking"] is False
+    assert call_kw["thinking"] is True
 
 
-def test_agent_passes_url_to_provider():
+def test_agent_passes_base_url_to_provider():
     mock_provider = MagicMock()
     mock_cls = MagicMock(return_value=mock_provider)
     fake_ep = MagicMock()
@@ -444,8 +444,46 @@ def test_agent_passes_url_to_provider():
         runner = CliRunner()
         runner.invoke(
             cli,
-            ["agent", "--provider", "fake", "--url", "http://ollama:11434"],
+            ["agent", "--provider", "fake", "--base-url", "http://ollama:11434"],
         )
 
     kwargs = mock_provider.run.call_args.kwargs
-    assert kwargs["url"] == "http://ollama:11434"
+    assert kwargs["base_url"] == "http://ollama:11434"
+
+
+def test_agent_defaults_progressive_for_litellm_ollama_model():
+    mock_provider = MagicMock()
+    mock_provider.default_model = "ollama/gemma4:e4b"
+    mock_cls = MagicMock(return_value=mock_provider)
+    fake_ep = MagicMock()
+    fake_ep.name = "litellm"
+    fake_ep.load = MagicMock(return_value=mock_cls)
+
+    with patch("kubeflow_mcp.cli._provider_entry_point_map", return_value={"litellm": fake_ep}):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["agent", "--provider", "litellm", "--model", "ollama/qwen3:8b"],
+        )
+
+    assert result.exit_code == 0
+    assert mock_provider.run.call_args.kwargs["mode"] == "progressive"
+
+
+def test_agent_defaults_full_for_cloud_model():
+    mock_provider = MagicMock()
+    mock_provider.default_model = "gpt-4.1"
+    mock_cls = MagicMock(return_value=mock_provider)
+    fake_ep = MagicMock()
+    fake_ep.name = "litellm"
+    fake_ep.load = MagicMock(return_value=mock_cls)
+
+    with patch("kubeflow_mcp.cli._provider_entry_point_map", return_value={"litellm": fake_ep}):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["agent", "--provider", "litellm", "--model", "gpt-4.1"],
+        )
+
+    assert result.exit_code == 0
+    assert mock_provider.run.call_args.kwargs["mode"] == "full"

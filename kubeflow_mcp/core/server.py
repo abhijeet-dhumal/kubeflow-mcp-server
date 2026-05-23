@@ -172,6 +172,8 @@ CRITICAL WORKFLOW - Follow these steps IN ORDER:
 
 IMPORTANT:
 - ALWAYS preview before submitting (confirmed=False first)
+- When a training tool returns status="Created", the job is submitted. STOP — do NOT call any training tool again for the same request. Summarize and offer monitoring commands.
+- When pre_flight returns blockers, explain the blockers and suggest alternatives. Do NOT attempt to submit a training job.
 - Use get_training_events() to debug stuck/failed jobs
 """
 

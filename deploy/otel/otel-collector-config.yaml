@@ -1,0 +1,42 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318   # agent layer + FastMCP server both send here
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:14250       # Jaeger gRPC collector
+    tls:
+      insecure: true
+
+  prometheus:
+    endpoint: 0.0.0.0:8889       # scraped by Prometheus
+
+  # Uncomment to forward OTLP traces to MLflow (≥ 2.16 with OTLP receiver)
+  # otlp/mlflow:
+  #   endpoint: mlflow:4318
+  #   tls:
+  #     insecure: true
+
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
