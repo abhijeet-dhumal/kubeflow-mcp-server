@@ -12,5 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared agent runtime core building blocks."""
+"""Framework-agnostic agent core: tool loading, schema, confirm gate."""
 
+from kubeflow_mcp.agents.core.confirm import (
+    ConfirmMiddleware,
+    ConfirmHandler,
+    make_console_confirm_handler,
+    set_confirm_handler,
+    wrap_with_confirm,
+)
+from kubeflow_mcp.agents.core.schema import (
+    _annotation_to_json_schema,
+    build_tool_schema,
+)
+from kubeflow_mcp.agents.core.tools import (
+    VALID_MODES,
+    audit_wrap,
+    get_system_prompt,
+    load_tools,
+)
+
+__all__ = [
+    # confirm
+    "ConfirmHandler",
+    "ConfirmMiddleware",
+    "make_console_confirm_handler",
+    "set_confirm_handler",
+    "wrap_with_confirm",
+    # schema
+    "_annotation_to_json_schema",
+    "build_tool_schema",
+    # tools
+    "VALID_MODES",
+    "audit_wrap",
+    "get_system_prompt",
+    "load_tools",
+]

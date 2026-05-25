@@ -27,35 +27,42 @@ Install:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import re
 import sys
-import types
 import uuid
 from collections.abc import AsyncGenerator, Callable
 from enum import Enum
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _SPHINX_BUILD = "sphinx" in sys.modules
 _PYTEST_RUNNING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in __import__("os").environ
 
-try:
-    import litellm
+_litellm_module: Any = None
 
-    litellm.suppress_debug_info = True
-    logging.getLogger("LiteLLM").setLevel(logging.ERROR)
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-except ImportError:
-    if not (_SPHINX_BUILD or _PYTEST_RUNNING):
-        sys.exit(
-            "Error: required packages not installed\n"
-            "Run: uv sync --extra agents-litellm   (or --extra agents for all backends)"
-        )
-    litellm = None  # type: ignore[assignment]
+
+def _litellm() -> Any:
+    """Lazily import and configure litellm on first use (~670ms deferred to first agent call)."""
+    global _litellm_module  # noqa: PLW0603
+    if _litellm_module is not None:
+        return _litellm_module
+    try:
+        import litellm as _ll
+
+        _ll.suppress_debug_info = True
+        logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+        logging.getLogger("httpx").setLevel(logging.ERROR)
+        _litellm_module = _ll
+    except ImportError:
+        if not (_SPHINX_BUILD or _PYTEST_RUNNING):
+            sys.exit(
+                "Error: required packages not installed\n"
+                "Run: uv sync --extra agents-litellm   (or --extra agents for all backends)"
+            )
+    return _litellm_module
 
 
 # ─── Agent event types ───────────────────────────────────────────────────────
@@ -78,81 +85,7 @@ class LoopState(Enum):
 
 # ─── Type annotation → JSON schema ───────────────────────────────────────────
 
-_PRIMITIVE_MAP: dict[Any, str] = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-}
-
-
-def _annotation_to_json_schema(annotation: Any) -> dict[str, Any]:
-    """Convert a Python type hint to an OpenAI JSON schema fragment."""
-    origin = get_origin(annotation)
-
-    # Handle Optional[X] (typing.Union[X, None]) and X | None (types.UnionType, Py 3.10+)
-    is_union = origin is Union
-    if not is_union and hasattr(types, "UnionType"):
-        is_union = isinstance(annotation, types.UnionType)
-    if is_union:
-        non_none = [a for a in get_args(annotation) if a is not type(None)]
-        return _annotation_to_json_schema(non_none[0]) if non_none else {"type": "string"}
-
-    if origin is list:
-        item_args = get_args(annotation)
-        item_schema = _annotation_to_json_schema(item_args[0]) if item_args else {"type": "string"}
-        return {"type": "array", "items": item_schema}
-
-    if origin is dict:
-        return {"type": "object"}
-
-    if annotation in _PRIMITIVE_MAP:
-        return {"type": _PRIMITIVE_MAP[annotation]}
-
-    return {"type": "string"}
-
-
-def build_tool_schema(fn: Callable[..., Any], description: str = "") -> dict[str, Any]:
-    """Build an OpenAI function-calling tool schema from a Python callable.
-
-    Args:
-        fn: The function to describe.
-        description: Override description (falls back to first docstring line).
-
-    Returns:
-        OpenAI ``{"type": "function", "function": {...}}`` schema dict.
-    """
-    sig = inspect.signature(fn)
-    try:
-        hints = get_type_hints(fn)
-    except Exception:
-        hints = {}
-
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-    for param_name, param in sig.parameters.items():
-        if param_name in ("_meta", "ctx", "self"):
-            continue
-        prop = _annotation_to_json_schema(hints.get(param_name, str))
-        properties[param_name] = prop
-        if param.default is inspect.Parameter.empty:
-            required.append(param_name)
-
-    doc = (fn.__doc__ or "").strip()
-    desc = description or (doc.split("\n")[0][:200] if doc else fn.__name__)
-
-    return {
-        "type": "function",
-        "function": {
-            "name": fn.__name__,
-            "description": desc,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        },
-    }
+from kubeflow_mcp.agents.core.schema import _annotation_to_json_schema, build_tool_schema
 
 
 # ─── Streaming tool-call delta accumulation ──────────────────────────────────
@@ -216,36 +149,8 @@ def _extract_text_tool_calls(text: str) -> list[dict]:
     return results
 
 
-# ─── Tool collection helpers ─────────────────────────────────────────────────
-
-
-def _get_full_mode_tools() -> tuple[list[Callable], dict[str, str]]:
-    """All trainer + health tools with descriptions — used by full mode."""
-    from kubeflow_mcp.core.health import HEALTH_TOOLS
-    from kubeflow_mcp.core.server import get_merged_client_tool_descriptions
-
-    try:
-        from kubeflow_mcp.trainer import TOOLS as TRAINER_TOOLS
-    except ImportError:
-        TRAINER_TOOLS = []  # type: ignore[assignment]
-
-    return list(TRAINER_TOOLS) + list(HEALTH_TOOLS), get_merged_client_tool_descriptions()
-
-
-def _get_meta_mode_tools(mode: str) -> tuple[list[Callable], dict[str, str]]:
-    """Meta-tools (progressive or semantic) — routes via execute_tool / find_tools."""
-    from kubeflow_mcp.core.dynamic_tools import (
-        PROGRESSIVE_TOOLS,
-        SEMANTIC_TOOLS,
-        init_dynamic_tools,
-    )
-
-    tool_fns, descriptions = _get_full_mode_tools()
-    init_dynamic_tools(tool_fns, descriptions)
-
-    tools = PROGRESSIVE_TOOLS if mode == "progressive" else SEMANTIC_TOOLS
-    descs = {fn.__name__: (fn.__doc__ or "").strip().split("\n")[0] for fn in tools}
-    return list(tools), descs
+# ─── Tool collection helpers (delegated to core/tools.py) ───────────────────
+from kubeflow_mcp.agents.core.tools import _get_full_mode_tools, _get_meta_mode_tools
 
 
 # ─── LiteLLMAgent ────────────────────────────────────────────────────────────
@@ -379,7 +284,7 @@ class LiteLLMAgent:
     def token_count(self) -> int:
         """Estimate total tokens in the current conversation."""
         try:
-            return litellm.token_counter(model=self.model, messages=self.messages)
+            return _litellm().token_counter(model=self.model, messages=self.messages)
         except Exception:
             return sum(len(str(m.get("content", ""))) // 4 for m in self.messages)
 
@@ -417,7 +322,7 @@ class LiteLLMAgent:
 
         while True:
             try:
-                response = await litellm.acompletion(**self._completion_kwargs())
+                response = await _litellm().acompletion(**self._completion_kwargs())
             except Exception as exc:
                 logger.error("LiteLLM completion failed: %s", exc)
                 yield ("error", {"type": type(exc).__name__, "message": str(exc)})
@@ -441,7 +346,7 @@ class LiteLLMAgent:
             # Track cost when usage is available
             if last_chunk is not None:
                 try:
-                    cost = litellm.completion_cost(completion_response=last_chunk)
+                    cost = _litellm().completion_cost(completion_response=last_chunk)
                     self._total_cost += cost
                 except Exception:
                     pass

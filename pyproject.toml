@@ -86,8 +86,19 @@ agents-llamaindex = [
 agents-obs = [
     # MLflow experiment tracking + Langfuse LLM session replay.
     # mlflow>=2.16 required for OTLP trace ingestion from OTel collector.
-    "langfuse>=2.0",
+    # langfuse<3.0: SDK v3+ changed the tracing API and is incompatible with
+    # the self-hosted Langfuse v2 server (langfuse/langfuse:2 container).
+    # Upgrade to langfuse>=3.0 only when the server is also upgraded to v3+.
+    "langfuse>=2.0,<3.0",
     "mlflow>=2.16",
+    # MLflow's MlflowV3SpanProcessor tries to export metrics via OTLP whenever
+    # OTEL_EXPORTER_OTLP_ENDPOINT is set (even when MLFLOW_ENABLE_OTLP_EXPORTER=false).
+    # It uses gRPC by default for metrics, HTTP for traces. Both are needed to avoid
+    # "No module named opentelemetry.exporter.otlp.proto.*" failures at span end.
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
 ]
 agents-otel = [
     # OpenTelemetry spans → OTel Collector → Jaeger / Prometheus / MLflow.
@@ -103,7 +114,7 @@ agents-litellm-obs = [
     # Equivalent to: agents-litellm + agents-obs + agents-otel
     "litellm>=1.0",
     "rich>=13.0",
-    "langfuse>=2.0",
+    "langfuse>=2.0,<3.0",
     "mlflow>=2.16",
     "opentelemetry-api>=1.27",
     "opentelemetry-sdk>=1.27",

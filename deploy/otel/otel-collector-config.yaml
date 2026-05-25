@@ -13,10 +13,8 @@ processors:
     limit_mib: 256
 
 exporters:
-  otlp/jaeger:
-    endpoint: jaeger:14250       # Jaeger gRPC collector
-    tls:
-      insecure: true
+  otlphttp/jaeger:
+    endpoint: http://jaeger:4318  # Jaeger OTLP HTTP (enabled via COLLECTOR_OTLP_ENABLED=true)
 
   prometheus:
     endpoint: 0.0.0.0:8889       # scraped by Prometheus
@@ -35,7 +33,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp/jaeger, debug]
+      exporters: [otlphttp/jaeger, debug]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]

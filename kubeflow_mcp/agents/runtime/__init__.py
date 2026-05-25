@@ -12,5 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared runtime helpers for interactive agent REPL flows."""
+"""Pluggable agent runtime: contracts, chain builder, shared REPL session."""
 
+from kubeflow_mcp.agents.runtime.contracts import (
+    TurnContext,
+    TurnMiddleware,
+    TurnResult,
+    TurnRunner,
+    build_chain,
+)
+from kubeflow_mcp.agents.runtime.session import AgentSession
+
+__all__ = [
+    "AgentSession",
+    "TurnContext",
+    "TurnMiddleware",
+    "TurnResult",
+    "TurnRunner",
+    "build_chain",
+]

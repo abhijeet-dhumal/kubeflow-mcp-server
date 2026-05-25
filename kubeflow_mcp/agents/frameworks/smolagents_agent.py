@@ -17,22 +17,26 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from collections.abc import Callable
 from typing import Any
 
-from kubeflow_mcp.agents.frameworks._confirm import (
-    make_console_confirm_handler,
-    set_confirm_handler,
-    wrap_with_confirm,
-)
+from kubeflow_mcp.agents.core.confirm import wrap_with_confirm
+from kubeflow_mcp.agents.core.tools import get_system_prompt, load_tools
 from kubeflow_mcp.agents.frameworks._thinking import apply_thinking_to_litellm_model
-from kubeflow_mcp.agents.frameworks._tools import get_system_prompt, load_tools
-from kubeflow_mcp.agents.litellm_agent import build_tool_schema
+from kubeflow_mcp.agents.core.schema import build_tool_schema
 from kubeflow_mcp.agents.observability import MlflowSessionLogger
+from kubeflow_mcp.agents.observability.middleware import (
+    LangfuseMiddleware,
+    MLflowMiddleware,
+    OTelMiddleware,
+    UsageMiddleware,
+)
+from kubeflow_mcp.agents.core.confirm import ConfirmMiddleware
+from kubeflow_mcp.agents.runtime.session import AgentSession
 from kubeflow_mcp.agents.runtime.repl_commands import (
-    REPL_EXIT_COMMANDS,
     CommonReplHandlers,
     handle_common_repl_command,
 )
@@ -60,12 +64,10 @@ from kubeflow_mcp.agents.terminal_ui import (  # noqa: E402
     get_console,
     print_assistant_panel,
     print_error_panel,
-    print_goodbye,
     print_tip,
     print_tool_call_panel,
     print_tool_result_panel,
     print_tools_table,
-    print_user_panel,
     print_welcome_panel,
     setup_readline_history,
 )
@@ -263,135 +265,6 @@ def _import_smolagents_tokens(path: str, turn: _TurnSnapshot) -> None:
         turn.session_output = int(tokens.get("output", 0) or 0)
 
 
-def _run_smolagents_repl(  # noqa: C901
-    *,
-    console,
-    agent_holder: list[Any],
-    logger: Any,
-    smol_tools: list[Any],
-    model: str,
-    tool_mode: str,
-    thinking_holder: list[bool],
-    rebuild_agent: Callable[[], None],
-    apply_thinking_to_existing_memory: Callable[[], None],
-    mlflow_logger: MlflowSessionLogger | None = None,
-) -> None:
-    from smolagents import LogLevel
-
-    turn = _TurnSnapshot()
-    reset_next = True
-
-    def _on_tools() -> None:
-        print_tools_table(
-            console,
-            [(tool.name, getattr(tool, "description", "") or "") for tool in smol_tools],
-            header_style="bold magenta",
-        )
-        print_tip(console, f"Mode: {tool_mode}  |  Total tools: {len(smol_tools)}")
-
-    def _on_clear() -> None:
-        nonlocal turn, reset_next
-        agent = agent_holder[0]
-        _reset_agent_memory(agent)
-        agent.monitor.reset()
-        turn = _TurnSnapshot()
-        reset_next = True
-        print_tip(console, "Conversation cleared.")
-
-    def _on_think() -> None:
-        thinking_holder[0] = not thinking_holder[0]
-        apply_thinking_to_existing_memory()
-        state = "on" if thinking_holder[0] else "off"
-        print_tip(console, f"Thinking mode: {state}")
-
-    def _on_export() -> None:
-        session = build_session_snapshot(
-            model=model,
-            framework="smolagents",
-            tool_mode=tool_mode,
-            token_input=turn.session_input,
-            token_output=turn.session_output,
-        )
-        out = export_session_snapshot(session)
-        print_tip(console, f"Session exported → {out}")
-
-    def _on_import(path: str) -> None:
-        nonlocal turn, reset_next
-        try:
-            _on_clear()
-            _import_smolagents_tokens(path, turn)
-            print_tip(
-                console,
-                f"Session imported ← {path}  (token totals restored; chat replay is not available in smolagents)",
-            )
-        except Exception as exc:
-            print_tip(console, f"Import error: {exc}", style="red")
-
-    def _on_unknown(command: str) -> None:
-        print_tip(console, f"Unknown command: {command!r}. Try /tools, /think, /export, /import, /clear.")
-
-    common_handlers = CommonReplHandlers(
-        on_tools=_on_tools,
-        on_think=_on_think,
-        on_export=_on_export,
-        on_import=_on_import,
-        on_clear=_on_clear,
-        on_unknown=_on_unknown,
-    )
-
-    while True:
-        try:
-            console.print()
-            console.print("[bold bright_blue]You[/bold bright_blue] ", end="")
-            line = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print_goodbye(console)
-            break
-
-        if not line:
-            continue
-        if line.lower() in REPL_EXIT_COMMANDS:
-            print_goodbye(console)
-            break
-
-        if handle_common_repl_command(line, common_handlers):
-            continue
-
-        print_user_panel(console, line)
-        try:
-            agent = agent_holder[0]
-            turn.begin(agent)
-            prev_level = logger.level
-            logger.level = LogLevel.ERROR
-            try:
-                try:
-                    answer, step_count = _run_turn_streaming(
-                        agent, line, reset=reset_next, console=console
-                    )
-                except TypeError:
-                    answer = _run_turn_blocking(agent, line, reset=reset_next)
-                    step_count = 1
-            finally:
-                logger.level = prev_level
-
-            turn.finish(agent, steps=step_count)
-            if answer.strip():
-                print_assistant_panel(console, answer)
-            _print_turn_stats(console, turn)
-            if mlflow_logger is not None:
-                mlflow_logger.log_turn(
-                    user_input=line,
-                    assistant_output=answer,
-                    llm_call_count=turn.steps,
-                    input_tokens=turn.last_input,
-                    output_tokens=turn.last_output,
-                    duration_s=turn.duration,
-                )
-            reset_next = False
-        except KeyboardInterrupt:
-            print_tip(console, "\nInterrupted.")
-        except Exception as exc:
-            print_error_panel(console, exc)
 
 
 def run_smolagents_chat(
@@ -400,6 +273,7 @@ def run_smolagents_chat(
     base_url: str | None = None,
     thinking: bool = True,
     num_retries: int = 3,
+    langfuse: bool = False,
     **_kwargs: Any,
 ) -> None:
     """Launch smolagents ToolCallingAgent with Kubeflow tools and LiteLLM routing."""
@@ -411,7 +285,6 @@ def run_smolagents_chat(
 
     setup_readline_history()
     console = get_console()
-    set_confirm_handler(make_console_confirm_handler(console))
     logger = AgentLogger(level=LogLevel.INFO, console=console)
     mlflow_logger = MlflowSessionLogger(model=model, tool_mode=tool_mode, framework="smolagents")
 
@@ -462,10 +335,9 @@ def run_smolagents_chat(
 
     backend_label = base_url or "cloud / local auto-detect"
     print_welcome_panel(
-        panel_title="kubeflow-mcp · smolagents",
+        panel_title="kubeflow-mcp · LiteLLM · smolagents",
         border_style="bright_magenta",
         rows=[
-            ("bold bright_magenta", "Kubeflow MCP — smolagents + LiteLLM"),
             ("white", f"Model   : {model}"),
             ("white", f"Backend : {backend_label}"),
             ("white", f"Mode    : {tool_mode}  ({len(smol_tools)} tools)"),
@@ -482,18 +354,159 @@ def run_smolagents_chat(
         ],
     )
 
-    try:
-        _run_smolagents_repl(
-            console=console,
-            agent_holder=agent_holder,
-            logger=logger,
-            smol_tools=smol_tools,
-            model=model,
-            tool_mode=tool_mode,
-            thinking_holder=thinking_holder,
-            rebuild_agent=rebuild_agent,
-            apply_thinking_to_existing_memory=apply_thinking_to_existing_memory,
-            mlflow_logger=mlflow_logger,
+    runner = SmolagentsRunner(
+        agent_holder=agent_holder,
+        smol_tool_list=smol_tools,
+        logger=logger,
+        model=model,
+        tool_mode=tool_mode,
+        thinking_holder=thinking_holder,
+        rebuild_agent_fn=rebuild_agent,
+        apply_thinking_fn=apply_thinking_to_existing_memory,
+        console=console,
+    )
+
+    session_id = f"smol-{os.urandom(6).hex()}"
+    langfuse_mw = LangfuseMiddleware(session_id=session_id, model=model, framework="smolagents") if langfuse else None
+    session = AgentSession(
+        runner=runner,
+        middleware=[
+            UsageMiddleware(),
+            OTelMiddleware(framework="smolagents"),
+            MLflowMiddleware(mlflow_logger),
+            *(([langfuse_mw]) if langfuse_mw else []),
+            ConfirmMiddleware(console),
+        ],
+        console=console,
+        model=model,
+        tool_mode=tool_mode,
+        command_handler=runner.handle_command,
+    )
+    session.run()
+
+
+# ─── SmolagentsRunner (TurnRunner adapter) ────────────────────────────────────
+
+
+class SmolagentsRunner:
+    """TurnRunner adapter wrapping smolagents ToolCallingAgent."""
+
+    def __init__(
+        self,
+        *,
+        agent_holder: list[Any],
+        smol_tool_list: list[Any],
+        logger: Any,
+        model: str,
+        tool_mode: str,
+        thinking_holder: list[bool],
+        rebuild_agent_fn: Callable[[], None],
+        apply_thinking_fn: Callable[[], None],
+        console: Any,
+    ) -> None:
+        self._agent_holder = agent_holder
+        self._smol_tools = smol_tool_list
+        self._logger = logger
+        self._model = model
+        self._tool_mode = tool_mode
+        self._thinking_holder = thinking_holder
+        self._rebuild_agent_fn = rebuild_agent_fn
+        self._apply_thinking_fn = apply_thinking_fn
+        self._console = console
+        self._turn = _TurnSnapshot()
+        self._reset_next = True
+
+    def run_turn(self, ctx: Any) -> Any:
+        from smolagents import LogLevel
+        from kubeflow_mcp.agents.runtime.contracts import TurnResult
+
+        console = ctx.extras.get("console", self._console)
+
+        agent = self._agent_holder[0]
+        self._turn.begin(agent)
+        prev_level = self._logger.level
+        self._logger.level = LogLevel.ERROR
+        try:
+            try:
+                answer, step_count = _run_turn_streaming(
+                    agent, ctx.user_input, reset=self._reset_next, console=console
+                )
+            except TypeError:
+                answer = _run_turn_blocking(agent, ctx.user_input, reset=self._reset_next)
+                step_count = 1
+        finally:
+            self._logger.level = prev_level
+
+        self._turn.finish(agent, steps=step_count)
+        self._reset_next = False
+        if answer.strip():
+            print_assistant_panel(console, answer)
+        _print_turn_stats(console, self._turn)
+
+        return TurnResult(
+            text=answer,
+            tool_calls=[],
+            usage={
+                "prompt_tokens": self._turn.last_input,
+                "completion_tokens": self._turn.last_output,
+            },
         )
-    finally:
-        mlflow_logger.close()
+
+    def rebuild(self, *, model: str | None = None, tool_mode: str | None = None) -> None:
+        self._rebuild_agent_fn()
+
+    def handle_command(self, line: str) -> bool:
+        from kubeflow_mcp.agents.runtime.repl_commands import handle_common_repl_command, CommonReplHandlers
+
+        def _on_tools() -> None:
+            print_tools_table(
+                self._console,
+                [(t.name, getattr(t, "description", "") or "") for t in self._smol_tools],
+                header_style="bold magenta",
+            )
+            print_tip(self._console, f"Mode: {self._tool_mode}  |  Total tools: {len(self._smol_tools)}")
+
+        def _on_think() -> None:
+            self._thinking_holder[0] = not self._thinking_holder[0]
+            self._apply_thinking_fn()
+            state = "on" if self._thinking_holder[0] else "off"
+            print_tip(self._console, f"Thinking mode: {state}")
+
+        def _on_export() -> None:
+            session = build_session_snapshot(
+                model=self._model,
+                framework="smolagents",
+                tool_mode=self._tool_mode,
+                token_input=self._turn.session_input,
+                token_output=self._turn.session_output,
+            )
+            out = export_session_snapshot(session)
+            print_tip(self._console, f"Session exported → {out}")
+
+        def _on_import(path: str) -> None:
+            try:
+                agent = self._agent_holder[0]
+                _reset_agent_memory(agent)
+                agent.monitor.reset()
+                self._turn = _TurnSnapshot()
+                self._reset_next = True
+                _import_smolagents_tokens(path, self._turn)
+                print_tip(self._console, f"Session imported ← {path}  (token totals restored)")
+            except Exception as exc:
+                print_tip(self._console, f"Import error: {exc}", style="red")
+
+        def _on_clear() -> None:
+            agent = self._agent_holder[0]
+            _reset_agent_memory(agent)
+            agent.monitor.reset()
+            self._turn = _TurnSnapshot()
+            self._reset_next = True
+            print_tip(self._console, "Conversation cleared.")
+
+        def _on_unknown(cmd: str) -> None:
+            print_tip(self._console, f"Unknown command: {cmd!r}. Try /tools, /think, /export, /import, /clear.")
+
+        return handle_common_repl_command(line, CommonReplHandlers(
+            on_tools=_on_tools, on_think=_on_think, on_export=_on_export,
+            on_import=_on_import, on_clear=_on_clear, on_unknown=_on_unknown,
+        ))

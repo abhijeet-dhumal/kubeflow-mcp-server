@@ -43,7 +43,7 @@ def __getattr__(name: str):
 
         return _LoopState
     if name == "build_tool_schema":
-        from kubeflow_mcp.agents.litellm_agent import build_tool_schema as _build_tool_schema
+        from kubeflow_mcp.agents.core.schema import build_tool_schema as _build_tool_schema
 
         return _build_tool_schema
     msg = f"module {__name__!r} has no attribute {name!r}"

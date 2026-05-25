@@ -28,7 +28,10 @@ from kubeflow.trainer import TrainerClient
 if TYPE_CHECKING:
     from kubernetes import client as k8s_client
 
-K8S_TIMEOUT = 5
+K8S_CONNECT_TIMEOUT = 10   # seconds to establish TCP connection
+K8S_READ_TIMEOUT = 45     # seconds to wait for API response (listing CRDs can be slow)
+# Tuple form accepted by kubernetes-python _request_timeout parameter.
+K8S_TIMEOUT = (K8S_CONNECT_TIMEOUT, K8S_READ_TIMEOUT)
 
 
 @lru_cache(maxsize=1)
@@ -44,9 +47,27 @@ def _get_api_client() -> "k8s_client.ApiClient":
     configuration = client.Configuration.get_default_copy()
     configuration.retries = 1
     configuration.socket_options = None  # rely on OS defaults
-    configuration.connect_timeout = K8S_TIMEOUT
-    configuration.read_timeout = K8S_TIMEOUT
+    configuration.connect_timeout = K8S_CONNECT_TIMEOUT
+    configuration.read_timeout = K8S_READ_TIMEOUT
     return client.ApiClient(configuration)
+
+
+@lru_cache(maxsize=1)
+def _configure_k8s_defaults() -> None:
+    """Apply timeout config to the global kubernetes Configuration.
+
+    TrainerClient creates its own internal ApiClient — it doesn't use
+    _get_api_client().  Patching the global default ensures TrainerClient
+    also inherits the timeout, preventing indefinite hangs on remote clusters.
+    """
+    from kubernetes import client, config
+
+    config.load_config()
+    cfg = client.Configuration.get_default_copy()
+    cfg.connect_timeout = K8S_CONNECT_TIMEOUT
+    cfg.read_timeout = K8S_READ_TIMEOUT
+    cfg.retries = 1
+    client.Configuration.set_default(cfg)
 
 
 def get_core_v1_api() -> "k8s_client.CoreV1Api":
@@ -92,22 +113,15 @@ def get_trainer_effective_namespace(namespace: str | None = None) -> str:
     return "default"
 
 
-def get_trainer_custom_objects_api() -> "k8s_client.CustomObjectsApi":
-    """CustomObjectsApi configured with the same kubeconfig as the MCP server.
-
-    Always creates a fresh API instance from the shared :func:`_get_api_client`
-    rather than extracting the SDK backend's internal client, which may hold
-    stale connections or divergent auth configuration in long-running processes.
-    """
-    return get_custom_objects_api()
-
 
 @lru_cache(maxsize=1)
 def get_trainer_client() -> TrainerClient:
     """Get or create TrainerClient singleton.
 
-    Uses default KubernetesBackendConfig with current kubeconfig context.
+    Applies global K8s timeout config before construction so TrainerClient's
+    internally-created ApiClient inherits the same connect/read limits.
     """
+    _configure_k8s_defaults()
     return TrainerClient()
 
 

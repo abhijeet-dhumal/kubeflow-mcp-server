@@ -82,74 +82,170 @@ def _inject_meta(result: Any, tool_name: str) -> Any:
     return result
 
 
+def _get_server_tracer() -> Any:
+    """Return the server-side OTel tracer (no-op if OTel is not configured)."""
+    try:
+        from kubeflow_mcp.core.telemetry import get_tracer
+
+        return get_tracer()
+    except ImportError:
+        return None
+
+
 def _audit_wrap(tool_func):
-    """Wrap a tool function with rate limiting, circuit breaking, audit logging, and response metadata."""
+    """Wrap a tool with rate limiting, circuit breaking, OTel spans, and audit logging.
+
+    OTel span attributes set per call:
+      tool.name, tool.args_preview, tool.success, tool.duration_ms,
+      user.id, mcp.session_id, correlation_id, kubeflow.persona.
+    Identity attributes (user.id / mcp.session_id) are read from
+    AuditIdentityMiddleware's ContextVars, giving each span full lineage.
+    """
+    tracer = _get_server_tracer()
 
     @functools.wraps(tool_func)
     def wrapper(**kwargs):
+        from kubeflow_mcp.core.middleware import _AUDIT_SESSION_ID, _AUDIT_USER_ID
+
         tool_name = tool_func.__name__
+        user_id = _AUDIT_USER_ID.get()
+        session_id = _AUDIT_SESSION_ID.get()
 
-        if _rate_limiter is not None and not _rate_limiter.acquire():
-            logger.warning("rate_limited", extra={"tool": tool_name})
-            return {
-                "error": "Rate limit exceeded. Retry after a brief pause.",
-                "error_code": ErrorCode.RATE_LIMITED,
-            }
-
-        breaker = get_breaker(tool_name)
-        if not breaker.can_execute():
-            logger.warning("circuit_open", extra={"tool": tool_name})
-            return {
-                "error": f"Circuit breaker open for '{tool_name}' — K8s API may be degraded. Retries automatically after recovery timeout.",
-                "error_code": ErrorCode.CIRCUIT_OPEN,
-            }
-
-        cid = with_correlation_id()
-        masked = mask_sensitive_data(kwargs) if kwargs else {}
-        start = time.monotonic()
         try:
-            result = tool_func(**kwargs)
-            duration_ms = int((time.monotonic() - start) * 1000)
-            is_success = (
-                "error_code" not in result and "error" not in result
-                if isinstance(result, dict)
-                else True
-            )
-            if is_success:
-                breaker.record_success()
-            elif is_infrastructure_error(result):
-                breaker.record_failure()
+            from opentelemetry.trace import SpanKind, StatusCode
 
-            logger.info(
-                "tool_call",
-                extra={
-                    "audit": True,
-                    "correlation_id": cid,
-                    "tool": tool_name,
-                    "parameters": masked,
-                    "success": is_success,
-                    "duration_ms": duration_ms,
-                },
-            )
-            return _inject_meta(result, tool_name)
-        except Exception:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            breaker.record_failure()
-            logger.error(
-                "tool_call_failed",
-                extra={
-                    "audit": True,
-                    "correlation_id": cid,
-                    "tool": tool_name,
-                    "parameters": masked,
-                    "success": False,
-                    "duration_ms": duration_ms,
-                },
-                exc_info=True,
-            )
-            raise
+            _StatusCode = StatusCode
+            _SpanKind = SpanKind
+        except ImportError:
+            _StatusCode = None
+            _SpanKind = None
+
+        span_kwargs: dict[str, Any] = {"name": f"tool.{tool_name}"}
+        if _SpanKind is not None:
+            span_kwargs["kind"] = _SpanKind.SERVER
+
+        _tracer = tracer or _get_server_tracer()
+        span_cm = (
+            _tracer.start_as_current_span(**span_kwargs)
+            if _tracer is not None
+            else _noop_span_cm()
+        )
+
+        with span_cm as span:
+            # Set identity + preview attrs before tool executes.
+            masked = mask_sensitive_data(kwargs) if kwargs else {}
+            import json as _json
+
+            args_preview = _json.dumps(masked, default=str)[:300]
+            _set_span_attrs(span, {
+                "tool.name": tool_name,
+                "tool.args_preview": args_preview,
+                "user.id": user_id,
+                "mcp.session_id": session_id,
+            })
+
+            if _rate_limiter is not None and not _rate_limiter.acquire():
+                logger.warning("rate_limited", extra={"tool": tool_name})
+                _set_span_attrs(span, {"tool.success": False, "rate_limited": True})
+                return {
+                    "error": "Rate limit exceeded. Retry after a brief pause.",
+                    "error_code": ErrorCode.RATE_LIMITED,
+                }
+
+            breaker = get_breaker(tool_name)
+            if not breaker.can_execute():
+                logger.warning("circuit_open", extra={"tool": tool_name})
+                _set_span_attrs(span, {"tool.success": False, "circuit_open": True})
+                return {
+                    "error": f"Circuit breaker open for '{tool_name}' — K8s API may be degraded. Retries automatically after recovery timeout.",
+                    "error_code": ErrorCode.CIRCUIT_OPEN,
+                }
+
+            cid = with_correlation_id()
+            _set_span_attrs(span, {"correlation_id": cid})
+            start = time.monotonic()
+            try:
+                result = tool_func(**kwargs)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                is_success = (
+                    "error_code" not in result and "error" not in result
+                    if isinstance(result, dict)
+                    else True
+                )
+                if is_success:
+                    breaker.record_success()
+                elif is_infrastructure_error(result):
+                    breaker.record_failure()
+
+                _set_span_attrs(span, {
+                    "tool.success": is_success,
+                    "tool.duration_ms": duration_ms,
+                })
+
+                logger.info(
+                    "tool_call",
+                    extra={
+                        "audit": True,
+                        "correlation_id": cid,
+                        "tool": tool_name,
+                        "user_id": user_id,
+                        "mcp_session_id": session_id,
+                        "parameters": masked,
+                        "success": is_success,
+                        "duration_ms": duration_ms,
+                    },
+                )
+                return _inject_meta(result, tool_name)
+            except Exception as exc:
+                duration_ms = int((time.monotonic() - start) * 1000)
+                breaker.record_failure()
+                if span is not None:
+                    try:
+                        span.record_exception(exc)
+                        if _StatusCode is not None:
+                            span.set_status(_StatusCode.ERROR, str(exc))
+                    except Exception:
+                        pass
+                _set_span_attrs(span, {
+                    "tool.success": False,
+                    "tool.duration_ms": duration_ms,
+                })
+                logger.error(
+                    "tool_call_failed",
+                    extra={
+                        "audit": True,
+                        "correlation_id": cid,
+                        "tool": tool_name,
+                        "user_id": user_id,
+                        "mcp_session_id": session_id,
+                        "parameters": masked,
+                        "success": False,
+                        "duration_ms": duration_ms,
+                    },
+                    exc_info=True,
+                )
+                raise
 
     return wrapper
+
+
+def _set_span_attrs(span: Any, attrs: dict[str, Any]) -> None:
+    """Silently set span attributes; no-op when span is None or a no-op stub."""
+    if span is None:
+        return
+    for k, v in attrs.items():
+        try:
+            span.set_attribute(k, v)
+        except Exception:
+            pass
+
+
+import contextlib  # noqa: E402
+
+
+@contextlib.contextmanager
+def _noop_span_cm():  # type: ignore[return]
+    yield None
 
 
 CLIENT_MODULES = {
@@ -175,6 +271,7 @@ IMPORTANT:
 - When a training tool returns status="Created", the job is submitted. STOP — do NOT call any training tool again for the same request. Summarize and offer monitoring commands.
 - When pre_flight returns blockers, explain the blockers and suggest alternatives. Do NOT attempt to submit a training job.
 - Use get_training_events() to debug stuck/failed jobs
+- For greetings, small talk, or questions that don't require Kubernetes/training data, respond directly WITHOUT calling any tool.
 """
 
 
@@ -340,6 +437,16 @@ def create_server(  # noqa: C901
         mcp_kwargs["auth"] = auth_provider
         logger.info("HTTP auth provider attached to server")
     mcp: FastMCP = FastMCP("kubeflow-mcp", **mcp_kwargs)
+
+    # Register FastMCP built-in + identity middleware (Gap 6B/6C).
+    try:
+        from kubeflow_mcp.core.middleware import register_fastmcp_middleware
+        from kubeflow_mcp.core.config import load_config
+
+        _cfg = load_config()
+        register_fastmcp_middleware(mcp, _cfg)
+    except Exception as _mw_err:
+        logger.debug(f"Middleware registration skipped: {_mw_err}")
 
     # Merge tool metadata from client modules
     all_descriptions: dict[str, str] = {}

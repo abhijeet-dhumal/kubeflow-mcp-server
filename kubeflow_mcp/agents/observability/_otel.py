@@ -78,16 +78,32 @@ def setup_otel_tracer(
     except ImportError:
         return False
 
+    import atexit
+
     # Normalise: traces endpoint is base_url + /v1/traces
     traces_url = resolved.rstrip("/") + "/v1/traces"
 
     resource = Resource(attributes={SERVICE_NAME: service_name})
     provider = TracerProvider(resource=resource)
+    # 2-second export timeout prevents the BatchSpanProcessor background thread
+    # from blocking Python shutdown when the collector is unreachable.
     provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=traces_url))
+        BatchSpanProcessor(
+            OTLPSpanExporter(endpoint=traces_url, timeout=2),
+            export_timeout_millis=2000,
+        )
     )
-    trace.set_tracer_provider(provider)
-    _tracer = trace.get_tracer(_TRACER_NAME)
+    # Do NOT call trace.set_tracer_provider() — MLflow also creates a global
+    # TracerProvider (lazily, on first start_span) and the two would collide with
+    # "Overriding of current TracerProvider is not allowed".  Instead keep our
+    # provider private: _tracer already has a direct reference to it so all
+    # agent_turn_span / tool_call_span calls route to Jaeger correctly.
+    _tracer = provider.get_tracer(_TRACER_NAME)
+
+    # Flush + shutdown the provider before Python's own atexit joins threads.
+    # Without this, the BatchSpanProcessor thread can deadlock on Ctrl+C.
+    atexit.register(provider.shutdown)
+
     return True
 
 

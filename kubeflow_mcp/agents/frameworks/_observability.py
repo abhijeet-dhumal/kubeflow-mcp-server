@@ -19,9 +19,13 @@ from __future__ import annotations
 import os
 
 
-def setup_langsmith(*, langfuse: bool = False) -> str | None:
-    """Enable LangSmith when CLI --langfuse or env is set."""
-    if langfuse:
+def setup_langsmith(*, langsmith: bool = False) -> str | None:
+    """Enable LangSmith tracing via LANGCHAIN_TRACING_V2.
+
+    Pass ``langsmith=True`` (from ``--langsmith`` CLI flag) to force-enable.
+    Always reads the env var so users can activate via ``LANGCHAIN_TRACING_V2=true``.
+    """
+    if langsmith:
         os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
     tracing = os.environ.get("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1", "yes")
     api_key = os.environ.get("LANGCHAIN_API_KEY") or os.environ.get("LANGSMITH_API_KEY")

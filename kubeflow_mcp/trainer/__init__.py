@@ -85,42 +85,9 @@ TOOLS = [
 ]
 
 # ─── Tool metadata (owned by this client module) ───────────────────────────
-
-CLIENT_TOOL_DESCRIPTIONS: dict[str, str] = {
-    "pre_flight": (
-        "One-shot: compatibility + cluster resources + model estimate + runtimes. "
-        "Call FIRST. Pass model= for GPU sizing."
-    ),
-    "check_compatibility": "Verify K8s version, Trainer CRD, installed packages, and platform. Use pre_flight() for full check.",
-    "get_cluster_resources": "Check cluster GPU/CPU availability. Use pre_flight() instead for full check.",
-    "estimate_resources": "Estimate GPU memory needed for a HuggingFace model. Use pre_flight(model=...) instead.",
-    "list_training_jobs": "List training jobs. Filter by runtime, status, or namespace.",
-    "get_training_job": "Get details of a specific training job. Supports optional namespace.",
-    "list_runtimes": "List available ClusterTrainingRuntimes.",
-    "get_runtime": "Get runtime config. Pass include_packages=True to fetch pip list (slow: creates a Pod).",
-    "fine_tune": (
-        "Fine-tune HuggingFace model with LoRA. Run list_runtimes() first to find the "
-        "correct runtime name. Optional name= for custom job name. Set confirmed=True to submit."
-    ),
-    "run_custom_training": (
-        "Run Python training script on the cluster. Pass runtime= for runtime selection. "
-        "Set confirmed=True to submit."
-    ),
-    "run_container_training": (
-        "Run training with custom container image. Pass runtime= and command= to "
-        "override runtime and entrypoint. Set confirmed=True to submit."
-    ),
-    "get_training_logs": "Get pod logs from a training job. Supports optional namespace.",
-    "get_training_events": "Get K8s events for debugging pending/failed jobs. Supports optional namespace.",
-    "wait_for_training": "Block until job reaches target status (Complete/Failed). Supports optional namespace.",
-    "delete_training_job": "[DESTRUCTIVE] Delete a training job permanently. Set confirmed=True to execute.",
-    "update_training_job": "Suspend or resume a training job. Pass action='suspend' or 'resume'.",
-    "inspect_crd": "List Trainer CRDs or get details for a specific one. Pass name= for details.",
-    "inspect_controller": "Inspect controller pod. Pass view='logs' or 'events'. Auto-discovers namespace.",
-    "patch_runtime": "Strategic merge patch on a ClusterTrainingRuntime. Set confirmed=True to apply.",
-    "create_runtime": "Create a new ClusterTrainingRuntime. Set confirmed=True to create.",
-    "delete_runtime": "[DESTRUCTIVE] Delete a ClusterTrainingRuntime. Lists dependent jobs first. Set confirmed=True.",
-}
+# Descriptions live in metadata.py (zero heavy imports) so progressive/semantic
+# mode can read them without triggering the full SDK import chain.
+from kubeflow_mcp.common.tool_metadata import CLIENT_TOOL_DESCRIPTIONS  # noqa: E402
 
 CLIENT_TOOL_ANNOTATIONS: dict[str, dict] = {
     "pre_flight": {
@@ -328,13 +295,13 @@ INSTRUCTION_SECTIONS: dict[str, dict[str, str]] = {
     "planning": {
         "full": """\
 PLANNING (always do first):
-- pre_flight(model="<model>") -> One call: compatibility + cluster + estimate + runtimes
+- pre_flight(model="<model>") -> One call: compatibility + cluster + estimate + runtimes. DO NOT call list_runtimes() afterward — runtimes are already in the pre_flight response.
 - pre_flight model must be a HuggingFace ID (e.g. google/gemma-2-2b), not an Ollama chat tag (e.g. gemma4:e4b)
 - If blockers returned, STOP and inform user
 - If gpu_total=0 -> fine_tune() will NOT work (torchtune needs GPUs). Use run_custom_training() with gloo backend instead
 - Individual tools (check_compatibility, get_cluster_resources, estimate_resources) available for targeted re-checks
-DISCOVERY (before training):
-- list_runtimes() -> find available runtimes; ALWAYS pass the exact runtime name to training tools
+DISCOVERY (after pre_flight, only if runtime details are needed):
+- list_runtimes() -> skip if pre_flight was already called (runtimes already returned)
 - get_runtime(name) -> inspect runtime spec, container images, default config
 - get_runtime(name, include_packages=True) -> list installed packages (slow: ~30-60s, creates temporary Pod). Call BEFORE choosing packages to avoid version conflicts""",
     },
@@ -353,11 +320,11 @@ MONITORING AND LIFECYCLE:
     "training": {
         "full": """\
 TOOL SELECTION:
-- HuggingFace model fine-tuning -> fine_tune(runtime=..., name=...) — requires a torchtune runtime AND GPUs (NCCL backend)
-- No torchtune runtime or no GPUs? -> use run_custom_training() with gloo backend. Read trainer://guides/training-patterns for LoRA patterns
-- Custom Python training script -> run_custom_training(runtime=...) — defaults to torch-distributed, works on CPU or GPU
-- Pre-built container image -> run_container_training(runtime=..., command=...) — supports command and args override
-- Runtime names encode the model family (e.g. llama runtime will fail on a qwen model)
+- ALWAYS follow pre_flight() tool_selection.recommended — if it says run_custom_training, use run_custom_training. Do NOT override this with fine_tune.
+- fine_tune() REQUIRES a runtime whose name starts with "torchtune". training-hub, torch-distributed, openmpi runtimes are NOT torchtune runtimes — fine_tune() will fail with them.
+- fine_tune(runtime=..., name=...) — only when pre_flight recommended fine_tune AND a torchtune-* runtime exists
+- run_custom_training(runtime=...) — use when pre_flight recommended run_custom_training, or when writing a custom LoRA/training script. Works with any runtime, CPU or GPU.
+- run_container_training(runtime=..., command=...) — use when user has a pre-built container image with an entrypoint
 
 TRAINING RULES:
 - ALWAYS preview before submitting (confirmed=False first), then show preview to user and wait for approval

@@ -53,8 +53,37 @@ def _suggest_hf_model_ids(raw: str, *, limit: int = 3) -> list[str]:
     return suggestions
 
 
+def _fetch_hf_config(model_id: str) -> dict[str, Any]:
+    """Download config.json for a HuggingFace model (lightweight, no weights).
+
+    Progress bars and the unauthenticated-hub warning are suppressed so they
+    don't pollute MCP tool output or the agent terminal.
+    """
+    try:
+        import json
+        import logging
+
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import disable_progress_bars
+
+        # Silence the "unauthenticated requests" warning that goes to stderr
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
+        disable_progress_bars()
+        path = hf_hub_download(repo_id=model_id, filename="config.json", repo_type="model")
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _get_model_info_from_hf(model: str) -> dict[str, Any] | None:
-    """Fetch model info from HuggingFace Hub."""
+    """Fetch model info from HuggingFace Hub.
+
+    Combines two lightweight calls:
+    - ``model_info()`` for exact param count (safetensors total) and metadata
+    - ``config.json`` download for architecture details (model_type, MoE config)
+    """
     try:
         if not _HF_MODEL_ID_RE.match(model):
             result: dict[str, Any] = {"error": f"Invalid HuggingFace model ID format: '{model}'"}
@@ -63,24 +92,45 @@ def _get_model_info_from_hf(model: str) -> dict[str, Any] | None:
                 result["suggestions"] = suggestions
             return result
 
+        import logging
+
         from huggingface_hub import model_info
 
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
         info = model_info(model, timeout=10)
 
-        # Get parameter count from safetensors metadata
+        # Exact param count from safetensors index (most accurate)
         params = None
         if info.safetensors:
             params = info.safetensors.total
 
-        # Try card_data for parameter count
+        # Fall back to card_data
         if not params and info.card_data:
             params = getattr(info.card_data, "num_parameters", None)
+
+        # Fetch config.json for architecture details
+        cfg = _fetch_hf_config(model)
+
+        model_type = cfg.get("model_type")
+        architectures = cfg.get("architectures", [])
+
+        # MoE: count active vs total experts to flag in result
+        num_experts: int | None = cfg.get("num_experts")
+        active_experts: int | None = cfg.get("num_experts_per_tok")
 
         return {
             "model_id": info.id,
             "params": params,
             "library": getattr(info, "library_name", None),
             "pipeline": getattr(info, "pipeline_tag", None),
+            "model_type": model_type,
+            "architectures": architectures,
+            "is_moe": num_experts is not None,
+            **(
+                {"num_experts": num_experts, "active_experts_per_tok": active_experts}
+                if num_experts is not None
+                else {}
+            ),
         }
 
     except Exception as e:
@@ -167,7 +217,7 @@ def _check_k8s_version(
     checks: dict[str, dict[str, Any]],
     blockers: list[str],
     get_version_api: Any,
-    timeout: int,
+    timeout: Any,
 ) -> None:
     """Check Kubernetes server version meets minimum requirement."""
     try:
@@ -204,7 +254,7 @@ def _check_trainer_crd(
     checks: dict[str, dict[str, Any]],
     blockers: list[str],
     get_custom_objects_api: Any,
-    timeout: int,
+    timeout: Any,
 ) -> bool:
     """Check Trainer CRD existence and API version. Returns whether CRD is installed."""
     try:
@@ -286,7 +336,7 @@ def _detect_platform(
     checks: dict[str, dict[str, Any]],
     recommendations: list[str],
     get_core_v1_api: Any,
-    timeout: int,
+    timeout: Any,
 ) -> str:
     """Detect cluster platform from node labels."""
     _label_prefixes = [
@@ -529,6 +579,20 @@ def estimate_resources(
         gpu_per_worker = estimates["gpu_count"]
         total_gpu = gpu_per_worker * num_workers
 
+        arch_fields: dict[str, Any] = {}
+        if hf_info.get("model_type"):
+            arch_fields["model_type"] = hf_info["model_type"]
+        if hf_info.get("architectures"):
+            arch_fields["architectures"] = hf_info["architectures"]
+        if hf_info.get("is_moe"):
+            arch_fields["is_moe"] = True
+            arch_fields["num_experts"] = hf_info.get("num_experts")
+            arch_fields["active_experts_per_tok"] = hf_info.get("active_experts_per_tok")
+            arch_fields["note"] = (
+                "MoE model: all expert weights reside in memory during training "
+                "(estimate uses total params, not active-only)"
+            )
+
         return ToolResponse(
             data={
                 "model": model,
@@ -544,6 +608,7 @@ def estimate_resources(
                 "breakdown": estimates["breakdown"],
                 "training_type": f"LoRA ({quantization})",
                 "recommendation": f"Request {total_gpu} GPU(s) - {estimates['gpu_type']}",
+                **arch_fields,
             }
         ).model_dump()
 

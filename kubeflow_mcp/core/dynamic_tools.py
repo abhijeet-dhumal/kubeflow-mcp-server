@@ -154,6 +154,64 @@ def init_dynamic_tools(
     )
 
 
+def init_dynamic_tools_lazy(descriptions: dict[str, str]) -> None:
+    """Initialize the registry from descriptions only — no tool imports.
+
+    Used by progressive/semantic modes so the 400ms kubeflow.trainer SDK
+    import is deferred until execute_tool() is first called.  func=None is
+    the lazy sentinel; execute_tool() resolves it on first use.
+    """
+    _embedding_cache.reset()
+    TOOL_REGISTRY.clear()
+    TOOL_HIERARCHY.clear()
+
+    for phase in TOOL_PHASES:
+        TOOL_HIERARCHY[phase] = []
+
+    for name, short_desc in descriptions.items():
+        category = TOOL_TO_PHASE.get(name, "other")
+        TOOL_REGISTRY[name] = {
+            "name": name,
+            "category": category,
+            "description": short_desc,
+            "full_doc": short_desc,
+            "func": None,  # resolved lazily in execute_tool()
+        }
+        TOOL_HIERARCHY.setdefault(category, []).append(name)
+
+    logger.info(
+        f"Dynamic tool registry initialized (lazy): {len(TOOL_REGISTRY)} tools, "
+        f"{len(TOOL_HIERARCHY)} categories"
+    )
+
+
+# Cache for the lazily-resolved tool function map (populated on first execute_tool call).
+_lazy_func_cache: dict[str, Callable] | None = None
+
+
+def _resolve_lazy_func(tool_name: str) -> Callable | None:
+    """Import all tool functions on first call and cache them."""
+    global _lazy_func_cache  # noqa: PLW0603
+    if _lazy_func_cache is None:
+        _lazy_func_cache = {}
+        try:
+            from kubeflow_mcp.trainer import TOOLS as _TRAINER_TOOLS
+
+            for fn in _TRAINER_TOOLS:
+                _lazy_func_cache[fn.__name__] = fn
+        except ImportError:
+            pass
+        try:
+            from kubeflow_mcp.core.health import HEALTH_TOOLS as _HEALTH_TOOLS
+
+            for fn in _HEALTH_TOOLS:
+                _lazy_func_cache[fn.__name__] = fn
+        except ImportError:
+            pass
+
+    return _lazy_func_cache.get(tool_name)
+
+
 # =============================================================================
 # Progressive mode: list_tools → describe_tools → execute_tool
 # =============================================================================
@@ -266,7 +324,24 @@ def execute_tool(tool_name: str, arguments: dict[str, Any] | None = None) -> dic
         }
 
     func = TOOL_REGISTRY[tool_name]["func"]
+    if func is None:
+        func = _resolve_lazy_func(tool_name)
+        if func is None:
+            return {"error": f"Tool '{tool_name}' could not be resolved — trainer SDK unavailable."}
+        TOOL_REGISTRY[tool_name]["func"] = func  # cache for next call
+
     args = arguments or {}
+
+    # Gap 6D: annotate the currently active OTel span with the *inner* tool name
+    # so traces show "execute_tool → pre_flight" instead of just "execute_tool".
+    try:
+        from opentelemetry import trace as _trace
+        span = _trace.get_current_span()
+        if span.is_recording():
+            span.set_attribute("meta.inner_tool", tool_name)
+            span.update_name(f"tool.execute_tool[{tool_name}]")
+    except Exception:
+        pass
 
     try:
         with warnings.catch_warnings():
@@ -432,7 +507,3 @@ def get_mode_tools(mode: str) -> list[Callable]:
     if mode == "progressive":
         return PROGRESSIVE_TOOLS
     raise ValueError(f"Unknown dynamic mode: {mode}. Use 'progressive' or 'semantic'.")
-
-
-# Alias for agent code and docs that speak in terms of "dynamic" meta-tools.
-get_dynamic_tools = get_mode_tools

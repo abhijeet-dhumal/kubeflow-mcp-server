@@ -93,6 +93,18 @@ class LiteLLMProvider:
         )
         # Expose model to _session.py OTel spans via env var
         os.environ["KUBEFLOW_MCP_MODEL"] = model
+
+        # Disable SSL verification for custom base_url endpoints (RHOAI/OpenShift
+        # clusters use internal CAs not trusted by the system keychain).
+        # Controlled by KUBEFLOW_MCP_SSL_VERIFY=true to re-enable.
+        if base_url and os.environ.get("KUBEFLOW_MCP_SSL_VERIFY", "false").lower() not in ("1", "true", "yes"):
+            os.environ.setdefault("CURL_CA_BUNDLE", "")
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
+            try:
+                import litellm as _ll
+                _ll.ssl_verify = False
+            except ImportError:
+                pass
         if cache:
             self._configure_cache()
 

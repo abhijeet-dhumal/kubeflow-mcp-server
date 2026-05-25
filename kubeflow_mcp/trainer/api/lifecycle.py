@@ -172,7 +172,7 @@ def update_training_job(
                     },
                 ).model_dump()
 
-        api = mcp_utils.get_trainer_custom_objects_api()
+        api = mcp_utils.get_custom_objects_api()
         body = {"spec": {"suspend": action == "suspend"}}
 
         api.patch_namespaced_custom_object(

@@ -87,6 +87,10 @@ class MlflowSessionLogger:
             return
 
         self._mlflow = mlflow
+        # Ensure the tracking URI is set explicitly — env var alone may not
+        # propagate to the GenAI tracing subsystem which initialises lazily.
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+
         try:
             exp_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
             exp_name = os.environ.get("MLFLOW_EXPERIMENT_NAME")
@@ -94,6 +98,14 @@ class MlflowSessionLogger:
                 mlflow.set_experiment(experiment_id=exp_id)
             elif exp_name:
                 mlflow.set_experiment(experiment_name=exp_name)
+
+            # Enable automatic LangChain tracing (MLflow 3.x GenAI Traces tab).
+            # Only for langchain; other frameworks use manual start_span() below.
+            if framework == "langchain":
+                try:
+                    mlflow.langchain.autolog(log_traces=True, disable=False)
+                except Exception:
+                    pass
 
             active = mlflow.active_run()
             if active is None:
@@ -140,6 +152,7 @@ class MlflowSessionLogger:
                 attributes={
                     "agent.framework": self.framework,
                     "agent.session_id": self.session_id,
+                    "mlflow.traceSessionId": self.session_id,
                     "agent.trace_mode": self._trace_mode,
                 },
             ) as span:
@@ -173,32 +186,34 @@ class MlflowSessionLogger:
         input_tokens: int = 0,
         output_tokens: int = 0,
         duration_s: float = 0.0,
+        otel_span: Any | None = None,
     ) -> None:
-        """Log one completed REPL turn. All keyword args are optional except the text pair."""
-        # Propagate session_id to _otel.py tool_call_span via ContextVar so
-        # tool spans created during this turn are automatically children.
+        """Log one completed REPL turn to MLflow.
+
+        Pass ``otel_span`` (the active OpenTelemetry span from ``OTelMiddleware``)
+        to annotate the span with turn-level stats.
+        """
+        # Ensure session_id is propagated for tool spans in the next turn.
         _SESSION_ID_VAR.set(self.session_id)
 
-        model = os.environ.get("KUBEFLOW_MCP_MODEL", "unknown")
-        with agent_turn_span(
-            user_input,
-            framework=self.framework,
-            session_id=self.session_id,
-            model=model,
-        ) as otel_span:
-            otel_span.set_attribute("agent.tool_call_count", tool_call_count)
-            otel_span.set_attribute("agent.llm_call_count", llm_call_count)
-            otel_span.set_attribute("agent.duration_ms", round(duration_s * 1000))
-            self._log_turn_inner(
-                user_input=user_input,
-                assistant_output=assistant_output,
-                tool_names=tool_names,
-                tool_call_count=tool_call_count,
-                llm_call_count=llm_call_count,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                duration_s=duration_s,
-            )
+        if otel_span is not None:
+            try:
+                otel_span.set_attribute("agent.tool_call_count", tool_call_count)
+                otel_span.set_attribute("agent.llm_call_count", llm_call_count)
+                otel_span.set_attribute("agent.duration_ms", round(duration_s * 1000))
+            except Exception:
+                pass
+
+        self._log_turn_inner(
+            user_input=user_input,
+            assistant_output=assistant_output,
+            tool_names=tool_names,
+            tool_call_count=tool_call_count,
+            llm_call_count=llm_call_count,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_s=duration_s,
+        )
 
     def _log_turn_inner(  # noqa: C901
         self,
@@ -268,6 +283,7 @@ class MlflowSessionLogger:
                     attributes={
                         "agent.framework": self.framework,
                         "agent.session_id": self.session_id,
+                        "mlflow.traceSessionId": self.session_id,
                         "agent.turn": str(self._step),
                         "agent.trace_mode": self._trace_mode,
                     },
@@ -344,6 +360,7 @@ class MlflowSessionLogger:
                     attributes={
                         "agent.framework": self.framework,
                         "agent.session_id": self.session_id,
+                        "mlflow.traceSessionId": self.session_id,
                         "agent.trace_mode": self._trace_mode,
                     },
                 ) as span:

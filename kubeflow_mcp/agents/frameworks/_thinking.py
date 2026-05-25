@@ -56,10 +56,18 @@ def thinking_completion_kwargs(*, enabled: bool, model: str) -> dict[str, Any]:
     """Extra kwargs for litellm.completion and LiteLLM wrappers."""
     if not enabled:
         return {}
-    # Ollama uses ``think``; Anthropic/OpenAI-style providers use ``thinking``.
+    # Ollama: native think param
     if is_local_ollama_model(model):
         return {"think": True}
-    return {"thinking": {"type": "enabled", "budget_tokens": 8192}}
+    # Anthropic only: extended thinking via the Anthropic-specific param
+    if model.startswith("anthropic/"):
+        return {"thinking": {"type": "enabled", "budget_tokens": 8192}}
+    # OpenAI-compatible endpoints (vLLM, RHOAI): thinking is controlled via
+    # extra_body={"chat_template_kwargs": {"enable_thinking": True}} — not
+    # supported here since LangChain/smolagents don't pass extra_body through
+    # model_kwargs. Callers that own the completion call directly (LiteLLMAgent)
+    # should pass extra_body separately when base_url is set.
+    return {}
 
 
 def apply_thinking_to_chat_litellm(llm_kwargs: dict[str, Any], *, enabled: bool, model: str) -> None:

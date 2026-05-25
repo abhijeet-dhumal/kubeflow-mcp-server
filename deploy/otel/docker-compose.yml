@@ -16,9 +16,7 @@ services:
       - COLLECTOR_OTLP_ENABLED=true
     ports:
       - "16686:16686"  # Jaeger UI
-      - "14250:14250"  # gRPC collector (otel-collector → Jaeger)
-      # Port 4317/4318 intentionally NOT exposed here — the otel-collector owns
-      # them. For a no-collector setup (Option A), use brew jaeger directly.
+      # 4318 not exposed to host — otel-collector reaches Jaeger internally via container network
 
   prometheus:
     image: prom/prometheus:latest

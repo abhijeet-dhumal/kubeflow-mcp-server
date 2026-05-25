@@ -12,39 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared tool loading for framework adapters."""
+"""Backward-compat shim — imports re-exported from agents/core/tools.py.
 
-from __future__ import annotations
+This module will be deleted in Gap 3F after all framework adapters
+import directly from kubeflow_mcp.agents.core.
+"""
 
-from collections.abc import Callable
-from typing import Any
+from kubeflow_mcp.agents.core.tools import audit_wrap, get_system_prompt, load_tools
 
-from kubeflow_mcp.agents.litellm_agent import _get_full_mode_tools, _get_meta_mode_tools
-
-
-def load_tools(tool_mode: str) -> tuple[list[Callable[..., Any]], dict[str, str]]:
-    """Return (tool callables, descriptions) for the given mode."""
-    if tool_mode == "full":
-        return _get_full_mode_tools()
-    if tool_mode in ("progressive", "semantic"):
-        return _get_meta_mode_tools(tool_mode)
-    msg = f"Invalid tool_mode {tool_mode!r}. Choose: full, progressive, semantic"
-    raise ValueError(msg)
-
-
-def get_system_prompt() -> str:
-    try:
-        from kubeflow_mcp.core.server import build_agent_instruction_text
-
-        return build_agent_instruction_text()
-    except ImportError:
-        return "You are a Kubeflow training assistant. Help users manage ML training jobs."
-
-
-def audit_wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
-    try:
-        from kubeflow_mcp.core.server import _audit_wrap
-
-        return _audit_wrap(fn)
-    except (ImportError, AttributeError):
-        return fn
+__all__ = ["audit_wrap", "get_system_prompt", "load_tools"]

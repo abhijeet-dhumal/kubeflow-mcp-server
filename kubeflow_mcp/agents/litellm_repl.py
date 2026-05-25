@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,13 @@ except ImportError:
 
 from kubeflow_mcp.agents.litellm_agent import LiteLLMAgent  # noqa: E402
 from kubeflow_mcp.agents.observability import MlflowSessionLogger  # noqa: E402
+from kubeflow_mcp.agents.observability.middleware import (  # noqa: E402
+    LangfuseMiddleware,
+    MLflowMiddleware,
+    OTelMiddleware,
+    UsageMiddleware,
+)
+from kubeflow_mcp.agents.runtime.session import AgentSession  # noqa: E402
 from kubeflow_mcp.agents.runtime.repl_commands import (  # noqa: E402
     REPL_EXIT_COMMANDS,
     CommonReplHandlers,
@@ -303,6 +311,7 @@ def run_litellm_chat(
     fallback_model: str | None = None,
     thinking: bool = True,
     num_retries: int = 3,
+    langfuse: bool = False,
     **_kwargs: Any,
 ) -> None:
     """Launch the blocking interactive REPL.
@@ -347,61 +356,75 @@ def run_litellm_chat(
         ],
     )
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    runner = LiteLLMRunner(agent=agent, console=console)
 
-    try:
-        while True:
-            try:
-                console.print()
-                console.print("[bold bright_blue]You[/bold bright_blue] ", end="")
-                line = input().strip()
-            except (EOFError, KeyboardInterrupt):
-                print_goodbye(console)
-                break
+    session_id = f"ll-{os.urandom(6).hex()}"
+    langfuse_mw = LangfuseMiddleware(session_id=session_id, model=model, framework="litellm") if langfuse else None
+    session = AgentSession(
+        runner=runner,
+        middleware=[
+            UsageMiddleware(),
+            OTelMiddleware(framework="litellm"),
+            MLflowMiddleware(mlflow_logger),
+            *(([langfuse_mw]) if langfuse_mw else []),
+        ],
+        console=console,
+        model=model,
+        tool_mode=tool_mode,
+        command_handler=runner.handle_command,
+    )
+    session.run()
 
-            if not line:
-                continue
 
-            if line.lower() in REPL_EXIT_COMMANDS:
-                print_goodbye(console)
-                break
+# ─── LiteLLMRunner (TurnRunner adapter) ──────────────────────────────────────
 
-            if line.startswith("/"):
-                should_exit = _dispatch_slash(line, agent, console, loop)
-                if should_exit:
-                    print_goodbye(console)
-                    break
-                continue
 
-            print_user_panel(console, line)
-            try:
-                tokens_before = agent.token_count()
-                import time as _time
+class LiteLLMRunner:
+    """TurnRunner adapter wrapping the LiteLLMAgent async loop."""
 
-                _turn_start = _time.monotonic()
-                loop.run_until_complete(_run_turn(agent, line, console))
-                _turn_dur = _time.monotonic() - _turn_start
-                tokens = agent.token_count()
-                cost = agent._total_cost
-                print_plain(
-                    console,
-                    f"[dim]tokens≈{tokens}  cost≈${cost:.4f}[/dim]",
-                )
-                if mlflow_logger is not None:
-                    # LiteLLM agent exposes total token count only; derive delta.
-                    token_delta = max(0, tokens - tokens_before)
-                    mlflow_logger.log_turn(
-                        user_input=line,
-                        assistant_output="",
-                        input_tokens=token_delta,
-                        duration_s=_turn_dur,
-                    )
-            except KeyboardInterrupt:
-                print_tip(console, "\nInterrupted. Type 'exit' to quit.")
-            except Exception as exc:
-                print_error_panel(console, exc)
-                logger.debug("Turn error", exc_info=True)
-    finally:
-        mlflow_logger.close()
-        loop.close()
+    def __init__(self, *, agent: LiteLLMAgent, console: Any) -> None:
+        self._agent = agent
+        self._console = console
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+    def run_turn(self, ctx: Any) -> Any:
+        from kubeflow_mcp.agents.runtime.contracts import TurnResult
+        import time as _time
+
+        console = ctx.extras.get("console", self._console)
+
+        tokens_before = self._agent.token_count()
+        t0 = _time.monotonic()
+        self._loop.run_until_complete(_run_turn(self._agent, ctx.user_input, console))
+        duration = _time.monotonic() - t0
+
+        tokens = self._agent.token_count()
+        cost = self._agent._total_cost
+        print_plain(console, f"[dim]tokens≈{tokens}  cost≈${cost:.4f}[/dim]")
+
+        return TurnResult(
+            text="",
+            usage={
+                "prompt_tokens": max(0, tokens - tokens_before),
+                "total_cost": cost,
+            },
+        )
+
+    def rebuild(self, *, model: str | None = None, tool_mode: str | None = None) -> None:
+        if model:
+            self._agent.switch_model(model)
+        if tool_mode:
+            self._agent.switch_mode(tool_mode)
+
+    def handle_command(self, line: str) -> bool:
+        if not line.startswith("/"):
+            return False
+        should_exit = _dispatch_slash(line, self._agent, self._console, self._loop)
+        if should_exit:
+            # Signal AgentSession to terminate by raising SystemExit in the loop
+            raise SystemExit(0)
+        return True
+
+    def close(self) -> None:
+        self._loop.close()

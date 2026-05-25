@@ -24,16 +24,19 @@ from collections.abc import Callable
 from typing import Any
 
 from kubeflow_mcp.agents.core.tool_dispatch import normalize_execute_tool_args
-from kubeflow_mcp.agents.frameworks._confirm import (
-    make_console_confirm_handler,
-    set_confirm_handler,
-    wrap_with_confirm,
-)
+from kubeflow_mcp.agents.core.confirm import wrap_with_confirm
+from kubeflow_mcp.agents.core.tools import get_system_prompt, load_tools
 from kubeflow_mcp.agents.frameworks._thinking import apply_thinking_to_llamaindex
-from kubeflow_mcp.agents.frameworks._tools import get_system_prompt, load_tools
 from kubeflow_mcp.agents.observability import MlflowSessionLogger
+from kubeflow_mcp.agents.observability.middleware import (
+    LangfuseMiddleware,
+    MLflowMiddleware,
+    OTelMiddleware,
+    UsageMiddleware,
+)
+from kubeflow_mcp.agents.core.confirm import ConfirmMiddleware
+from kubeflow_mcp.agents.runtime.session import AgentSession
 from kubeflow_mcp.agents.runtime.repl_commands import (
-    REPL_EXIT_COMMANDS,
     CommonReplHandlers,
     handle_common_repl_command,
 )
@@ -58,12 +61,10 @@ from kubeflow_mcp.agents.terminal_ui import (  # noqa: E402
     get_console,
     print_assistant_panel,
     print_error_panel,
-    print_goodbye,
     print_tip,
     print_tool_call_panel,
     print_tool_result_panel,
     print_tools_table,
-    print_user_panel,
     print_welcome_panel,
     setup_readline_history,
 )
@@ -261,133 +262,6 @@ async def _run_turn_async(
     return _sanitize_react_answer(_response_text(stop).strip())
 
 
-def _run_llamaindex_repl(  # noqa: C901
-    *,
-    console,
-    agent_holder: list[Any],
-    ctx_holder: list[Any],
-    tracker: _UsageTracker,
-    li_tools: list[Any],
-    model: str,
-    tool_mode: str,
-    thinking_holder: list[bool],
-    pending_rebuild_holder: list[bool],
-    rebuild_agent: Callable[[], None],
-    mlflow_logger: MlflowSessionLogger | None = None,
-) -> None:
-    from llama_index.core.workflow import Context
-
-    def _on_tools() -> None:
-        print_tools_table(
-            console,
-            [
-                (
-                    getattr(tool.metadata, "name", tool.__class__.__name__),
-                    getattr(tool.metadata, "description", "") or "",
-                )
-                for tool in li_tools
-            ],
-            header_style="bold green",
-        )
-        print_tip(console, f"Mode: {tool_mode}  |  Total tools: {len(li_tools)}")
-
-    def _on_think() -> None:
-        thinking_holder[0] = not thinking_holder[0]
-        pending_rebuild_holder[0] = True
-        state = "on" if thinking_holder[0] else "off"
-        print_tip(console, f"Thinking mode: {state} (applies on /clear)")
-
-    def _on_export() -> None:
-        session = build_session_snapshot(
-            model=model,
-            framework="llamaindex",
-            tool_mode=tool_mode,
-            token_input=tracker.session_input,
-            token_output=tracker.session_output,
-        )
-        out = export_session_snapshot(session)
-        print_tip(console, f"Session exported → {out}")
-
-    def _on_import(path: str) -> None:
-        try:
-            _on_clear()
-            _import_llamaindex_tokens(path, tracker)
-            print_tip(
-                console,
-                f"Session imported ← {path}  (token totals restored; chat replay is not available in llamaindex)",
-            )
-        except Exception as exc:
-            print_tip(console, f"Import error: {exc}", style="red")
-
-    def _on_clear() -> None:
-        if pending_rebuild_holder[0]:
-            rebuild_agent()
-            pending_rebuild_holder[0] = False
-        ctx_holder[0] = Context(agent_holder[0])
-        reset_token_totals(tracker)
-        print_tip(console, "Conversation cleared.")
-
-    def _on_unknown(command: str) -> None:
-        print_tip(console, f"Unknown command: {command!r}. Try /tools, /think, /export, /import, /clear.")
-
-    common_handlers = CommonReplHandlers(
-        on_tools=_on_tools,
-        on_think=_on_think,
-        on_export=_on_export,
-        on_import=_on_import,
-        on_clear=_on_clear,
-        on_unknown=_on_unknown,
-    )
-
-    while True:
-        try:
-            console.print()
-            console.print("[bold bright_blue]You[/bold bright_blue] ", end="")
-            line = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print_goodbye(console)
-            break
-
-        if not line:
-            continue
-        if line.lower() in REPL_EXIT_COMMANDS:
-            print_goodbye(console)
-            break
-
-        if handle_common_repl_command(line, common_handlers):
-            continue
-
-        print_user_panel(console, line)
-        try:
-            tracker.reset_turn()
-            answer = asyncio.run(
-                _run_turn_async(
-                    agent_holder[0],
-                    ctx_holder[0],
-                    line,
-                    console=console,
-                    tracker=tracker,
-                )
-            )
-            tracker.finish_turn(answer)
-            if answer.strip():
-                print_assistant_panel(console, answer)
-            _print_turn_stats(console, tracker, model)
-            if mlflow_logger is not None:
-                mlflow_logger.log_turn(
-                    user_input=line,
-                    assistant_output=answer,
-                    tool_call_count=tracker.turn_tools,
-                    llm_call_count=tracker.turn_llm_calls,
-                    input_tokens=tracker.turn_input,
-                    output_tokens=tracker.turn_output,
-                    duration_s=tracker.turn_duration,
-                )
-        except KeyboardInterrupt:
-            print_tip(console, "\nInterrupted.")
-        except Exception as exc:
-            print_error_panel(console, exc)
-
 
 def run_llamaindex_chat(
     model: str,
@@ -395,6 +269,7 @@ def run_llamaindex_chat(
     base_url: str | None = None,
     thinking: bool = True,
     num_retries: int = 3,
+    langfuse: bool = False,
     **_kwargs: Any,
 ) -> None:
     """Launch LlamaIndex ReActAgent with Kubeflow tools and LiteLLM LLM."""
@@ -411,7 +286,6 @@ def run_llamaindex_chat(
 
     setup_readline_history()
     console = get_console()
-    set_confirm_handler(make_console_confirm_handler(console))
     mlflow_logger = MlflowSessionLogger(model=model, tool_mode=tool_mode, framework="llamaindex")
 
     token_handler = TokenCountingHandler()
@@ -454,10 +328,9 @@ def run_llamaindex_chat(
     tracing = _llamatrace_status()
 
     print_welcome_panel(
-        panel_title="kubeflow-mcp · LlamaIndex ReAct",
+        panel_title="kubeflow-mcp · LiteLLM · LlamaIndex",
         border_style="bright_green",
         rows=[
-            ("bold bright_green", "Kubeflow MCP — LlamaIndex ReAct + LiteLLM"),
             ("white", f"Model   : {model}"),
             ("white", f"Backend : {backend_label}"),
             ("white", f"Mode    : {tool_mode}  ({len(li_tools)} tools)"),
@@ -476,19 +349,156 @@ def run_llamaindex_chat(
         ],
     )
 
-    try:
-        _run_llamaindex_repl(
-            console=console,
-            agent_holder=agent_holder,
-            ctx_holder=ctx_holder,
-            tracker=tracker,
-            li_tools=li_tools,
-            model=model,
-            tool_mode=tool_mode,
-            thinking_holder=thinking_holder,
-            pending_rebuild_holder=pending_rebuild_holder,
-            rebuild_agent=rebuild_agent,
-            mlflow_logger=mlflow_logger,
+    runner = LlamaIndexRunner(
+        agent_holder=agent_holder,
+        ctx_holder=ctx_holder,
+        tracker=tracker,
+        li_tool_list=li_tools,
+        model=model,
+        tool_mode=tool_mode,
+        thinking_holder=thinking_holder,
+        pending_rebuild_holder=pending_rebuild_holder,
+        rebuild_agent_fn=rebuild_agent,
+        console=console,
+    )
+
+    session_id = f"lli-{os.urandom(6).hex()}"
+    langfuse_mw = LangfuseMiddleware(session_id=session_id, model=model, framework="llamaindex") if langfuse else None
+    session = AgentSession(
+        runner=runner,
+        middleware=[
+            UsageMiddleware(),
+            OTelMiddleware(framework="llamaindex"),
+            MLflowMiddleware(mlflow_logger),
+            *(([langfuse_mw]) if langfuse_mw else []),
+            ConfirmMiddleware(console),
+        ],
+        console=console,
+        model=model,
+        tool_mode=tool_mode,
+        command_handler=runner.handle_command,
+    )
+    session.run()
+
+
+# ─── LlamaIndexRunner (TurnRunner adapter) ────────────────────────────────────
+
+
+class LlamaIndexRunner:
+    """TurnRunner adapter wrapping LlamaIndex ReActAgent."""
+
+    def __init__(
+        self,
+        *,
+        agent_holder: list[Any],
+        ctx_holder: list[Any],
+        tracker: _UsageTracker,
+        li_tool_list: list[Any],
+        model: str,
+        tool_mode: str,
+        thinking_holder: list[bool],
+        pending_rebuild_holder: list[bool],
+        rebuild_agent_fn: Callable[[], None],
+        console: Any,
+    ) -> None:
+        self._agent_holder = agent_holder
+        self._ctx_holder = ctx_holder
+        self._tracker = tracker
+        self._li_tools = li_tool_list
+        self._model = model
+        self._tool_mode = tool_mode
+        self._thinking_holder = thinking_holder
+        self._pending_rebuild_holder = pending_rebuild_holder
+        self._rebuild_agent_fn = rebuild_agent_fn
+        self._console = console
+
+    def run_turn(self, ctx: Any) -> Any:
+        from kubeflow_mcp.agents.runtime.contracts import TurnResult
+
+        console = ctx.extras.get("console", self._console)
+
+        self._tracker.reset_turn()
+        answer = asyncio.run(
+            _run_turn_async(
+                self._agent_holder[0],
+                self._ctx_holder[0],
+                ctx.user_input,
+                console=console,
+                tracker=self._tracker,
+            )
         )
-    finally:
-        mlflow_logger.close()
+        self._tracker.finish_turn(answer)
+        if answer.strip():
+            print_assistant_panel(console, answer)
+        _print_turn_stats(console, self._tracker, self._model)
+
+        return TurnResult(
+            text=answer,
+            tool_calls=[],
+            usage={
+                "prompt_tokens": self._tracker.turn_input,
+                "completion_tokens": self._tracker.turn_output,
+            },
+        )
+
+    def rebuild(self, *, model: str | None = None, tool_mode: str | None = None) -> None:
+        self._rebuild_agent_fn()
+
+    def handle_command(self, line: str) -> bool:
+        from kubeflow_mcp.agents.runtime.repl_commands import handle_common_repl_command, CommonReplHandlers
+
+        def _on_tools() -> None:
+            print_tools_table(
+                self._console,
+                [
+                    (
+                        getattr(t.metadata, "name", t.__class__.__name__),
+                        getattr(t.metadata, "description", "") or "",
+                    )
+                    for t in self._li_tools
+                ],
+                header_style="bold green",
+            )
+            print_tip(self._console, f"Mode: {self._tool_mode}  |  Total tools: {len(self._li_tools)}")
+
+        def _on_think() -> None:
+            self._thinking_holder[0] = not self._thinking_holder[0]
+            self._pending_rebuild_holder[0] = True
+            state = "on" if self._thinking_holder[0] else "off"
+            print_tip(self._console, f"Thinking mode: {state} (applies on /clear)")
+
+        def _on_export() -> None:
+            session = build_session_snapshot(
+                model=self._model,
+                framework="llamaindex",
+                tool_mode=self._tool_mode,
+                token_input=self._tracker.session_input,
+                token_output=self._tracker.session_output,
+            )
+            out = export_session_snapshot(session)
+            print_tip(self._console, f"Session exported → {out}")
+
+        def _on_import(path: str) -> None:
+            try:
+                _import_llamaindex_tokens(path, self._tracker)
+                print_tip(self._console, f"Session imported ← {path}  (token totals restored)")
+            except Exception as exc:
+                print_tip(self._console, f"Import error: {exc}", style="red")
+
+        def _on_clear() -> None:
+            if self._pending_rebuild_holder[0]:
+                self._rebuild_agent_fn()
+                self._pending_rebuild_holder[0] = False
+            else:
+                from llama_index.core.workflow import Context
+                self._ctx_holder[0] = Context(self._agent_holder[0])
+            reset_token_totals(self._tracker)
+            print_tip(self._console, "Conversation cleared.")
+
+        def _on_unknown(cmd: str) -> None:
+            print_tip(self._console, f"Unknown command: {cmd!r}. Try /tools, /think, /export, /import, /clear.")
+
+        return handle_common_repl_command(line, CommonReplHandlers(
+            on_tools=_on_tools, on_think=_on_think, on_export=_on_export,
+            on_import=_on_import, on_clear=_on_clear, on_unknown=_on_unknown,
+        ))

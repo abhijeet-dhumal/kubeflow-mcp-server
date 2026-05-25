@@ -14,6 +14,11 @@
 
 """Kubeflow MCP Server CLI."""
 
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
 import warnings
 from typing import Any
 
@@ -23,6 +28,100 @@ from kubeflow_mcp import __version__
 
 # Suppress pydantic warnings from fastmcp/mcp dependencies
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+
+# ── Dependency auto-sync ───────────────────────────────────────────────────────
+
+# (module_to_probe, uv_extra_name) — ordered: base framework first, obs add-ons after.
+_FRAMEWORK_DEPS: dict[str, tuple[str, list[str]]] = {
+    "langchain":  ("agents-langchain",  ["langchain_core", "langchain_litellm"]),
+    "smolagents": ("agents-smolagents", ["smolagents"]),
+    "llamaindex": ("agents-llamaindex", ["llama_index.core"]),
+    "litellm":    ("agents-litellm",    ["litellm"]),
+}
+_OBS_DEPS: dict[str, tuple[str, list[str]]] = {
+    "otel":    ("agents-otel", ["opentelemetry.sdk"]),
+    "mlflow":  ("agents-obs",  ["mlflow"]),
+    "langfuse":("agents-obs",  ["langfuse"]),
+}
+
+
+def _missing(modules: list[str]) -> list[str]:
+    return [m for m in modules if importlib.util.find_spec(m) is None]
+
+
+def _ensure_agent_deps(
+    framework: str,
+    *,
+    otel_endpoint: str | None,
+    mlflow_uri: str | None,
+    langfuse: bool,
+) -> None:
+    """Check required packages and offer to auto-sync if anything is missing.
+
+    Uses importlib.util.find_spec() — no imports triggered, runs in <1ms.
+    """
+    needed_extras: list[str] = []
+    missing_modules: list[str] = []
+
+    # Framework deps — always resolve the extra for this framework so that any
+    # subsequent `uv sync` below includes it (uv sync replaces the whole env).
+    framework_extra, framework_modules = _FRAMEWORK_DEPS.get(
+        framework, ("agents-langchain", [])
+    )
+    gaps = _missing(framework_modules)
+    if gaps:
+        needed_extras.append(framework_extra)
+        missing_modules.extend(gaps)
+
+    # Observability deps — only checked when the corresponding flag is active
+    obs_extras_needed: list[str] = []
+    for flag_active, key in [
+        (bool(otel_endpoint), "otel"),
+        (bool(mlflow_uri), "mlflow"),
+        (langfuse, "langfuse"),
+    ]:
+        if flag_active:
+            obs_extra, obs_modules = _OBS_DEPS[key]
+            gaps = _missing(obs_modules)
+            if gaps:
+                if obs_extra not in needed_extras:
+                    needed_extras.append(obs_extra)
+                    obs_extras_needed.append(obs_extra)
+                missing_modules.extend(g for g in gaps if g not in missing_modules)
+
+    # If any obs extra is needed, always pin the framework extra too — even if
+    # its modules are currently installed — because `uv sync --extra agents-obs`
+    # alone will drop the framework packages (uv replaces the whole environment).
+    if obs_extras_needed and framework_extra not in needed_extras:
+        needed_extras.insert(0, framework_extra)
+
+    if not needed_extras:
+        return
+
+    sync_cmd = "uv sync " + " ".join(f"--extra {e}" for e in dict.fromkeys(needed_extras))
+    click.echo()
+    click.echo(click.style("  Missing packages detected:", fg="yellow", bold=True))
+    for m in missing_modules:
+        click.echo(click.style(f"    · {m}", fg="yellow"))
+    click.echo()
+    click.echo(f"  Run:  {click.style(sync_cmd, fg='cyan', bold=True)}")
+    click.echo()
+
+    uv = shutil.which("uv")
+    if uv and click.confirm("  Auto-install now?", default=True):
+        args = [uv, "sync"] + [a for e in dict.fromkeys(needed_extras) for a in ("--extra", e)]
+        click.echo()
+        result = subprocess.run(args, check=False)
+        if result.returncode != 0:
+            click.echo(click.style("  uv sync failed — fix errors above and retry.", fg="red"), err=True)
+            raise SystemExit(1)
+        click.echo()
+        click.echo(click.style("  Packages installed. Restarting agent…", fg="green"))
+        click.echo()
+        os.execv(sys.argv[0], sys.argv)  # re-exec with fresh environment
+    else:
+        click.echo(f"  Install manually:  {sync_cmd}", err=True)
+        raise SystemExit(1)
 
 
 @click.group()
@@ -95,6 +194,16 @@ def cli() -> None:
     "Falls back to KUBEFLOW_MCP_AUTH_TOKEN env var, config file. "
     "Ignored for stdio transport.",
 )
+@click.option(
+    "--otel-endpoint",
+    default=None,
+    envvar="OTEL_EXPORTER_OTLP_ENDPOINT",
+    help=(
+        "OTLP HTTP endpoint for server-side OTel traces, e.g. http://localhost:4318. "
+        "Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var. "
+        "Run deploy/otel/docker-compose.yml to start a local collector."
+    ),
+)
 def serve(
     clients: str | None,
     persona: str | None,
@@ -105,6 +214,7 @@ def serve(
     instruction_tier: str | None,
     no_banner: bool,
     auth_token: str | None,
+    otel_endpoint: str | None,
 ) -> None:
     """Start the MCP server.
 
@@ -141,6 +251,15 @@ def serve(
             "instruction_tier": instruction_tier,
         },
     )
+
+    # Wire server-side OTel tracing (Gap 6A).
+    try:
+        from kubeflow_mcp.core.telemetry import setup_tracing
+
+        tracing_active = setup_tracing(otel_endpoint)
+        logger.info("server_otel_tracing", extra={"active": tracing_active})
+    except Exception:
+        pass
 
     configure_resilience(
         rate_limit=cfg.resilience.rate_limit,
@@ -314,6 +433,12 @@ def agent(
     otel_endpoint: str | None,
 ) -> None:
     """Run an interactive AI agent backed by a registered provider."""
+    _ensure_agent_deps(
+        framework,
+        otel_endpoint=otel_endpoint,
+        mlflow_uri=mlflow_uri,
+        langfuse=langfuse,
+    )
     eps = _provider_entry_point_map()
     if provider not in eps:
         available = ", ".join(sorted(eps)) or "none installed"
@@ -325,6 +450,15 @@ def agent(
     except ImportError as e:
         click.echo(f"Provider '{provider}' dependencies missing: {e}", err=True)
         raise SystemExit(1) from None
+
+    # Initialize agent-side OTel tracer so spans flow to Jaeger / OTel Collector.
+    # Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var when --otel-endpoint is omitted.
+    try:
+        from kubeflow_mcp.agents.observability._otel import setup_otel_tracer
+
+        setup_otel_tracer(endpoint=otel_endpoint)
+    except Exception:
+        pass
 
     instance = provider_cls()
     resolved_model = model or instance.default_model
@@ -347,6 +481,97 @@ def agent(
     if fallback_model is not None:
         kwargs["fallback_model"] = fallback_model
     instance.run(model=resolved_model, mode=resolved_mode, **kwargs)
+
+
+@cli.command("eval")
+@click.option("--model", "-m", default="ollama/qwen3:8b", help="LiteLLM model string for the agent")
+@click.option("--base-url", default=None, help="Agent model base URL (OpenAI-compatible)")
+@click.option("--case", default=None, metavar="CASE_ID", help="Run a single eval case by ID")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Stream agent output")
+@click.option("--thinking", is_flag=True, default=False, help="Enable extended thinking (off by default)")
+@click.option("--timeout", type=float, default=120.0, metavar="SECS", help="Per-case timeout (default 120s)")
+@click.option(
+    "--judge",
+    default="rule",
+    type=click.Choice(["rule", "llm", "all"]),
+    help="Judge mode: rule (fast), llm (LLM quality), all (both)",
+)
+@click.option("--judge-model", default="openai/qwen36-27b", help="LiteLLM model for LLM judge")
+@click.option("--judge-base-url", default=None, help="Base URL for judge model endpoint")
+@click.option(
+    "--langfuse/--no-langfuse",
+    default=False,
+    help="Enable Langfuse experiment tracking (requires LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY)",
+)
+@click.option("--experiment", default=None, help="Langfuse experiment name (auto-generated if omitted)")
+@click.option(
+    "--dataset",
+    default="kubeflow-mcp-eval",
+    help="Langfuse dataset name (default: kubeflow-mcp-eval)",
+)
+@click.option("--upload-only", is_flag=True, default=False, help="Only sync cases to Langfuse, skip agent run")
+def eval_cmd(
+    model: str,
+    base_url: str | None,
+    case: str | None,
+    verbose: bool,
+    thinking: bool,
+    timeout: float,
+    judge: str,
+    judge_model: str,
+    judge_base_url: str | None,
+    langfuse: bool,
+    experiment: str | None,
+    dataset: str,
+    upload_only: bool,
+) -> None:
+    """Run the agent eval suite (rule judges + optional LLM judge + Langfuse tracking)."""
+    import sys
+
+    if langfuse or upload_only:
+        from eval.langfuse_eval import cli as _langfuse_cli
+        # Rebuild sys.argv so the langfuse_eval CLI parser sees the right flags.
+        argv = ["langfuse-eval", "--model", model, "--judge", judge, "--judge-model", judge_model]
+        if base_url:
+            argv += ["--base-url", base_url]
+        if case:
+            argv += ["--case", case]
+        if verbose:
+            argv.append("--verbose")
+        if thinking:
+            argv.append("--thinking")
+        if timeout != 120.0:
+            argv += ["--timeout", str(timeout)]
+        if judge_base_url:
+            argv += ["--judge-base-url", judge_base_url]
+        if experiment:
+            argv += ["--experiment", experiment]
+        if dataset != "kubeflow-mcp-eval":
+            argv += ["--dataset", dataset]
+        if upload_only:
+            argv.append("--upload-only")
+        sys.argv = argv
+        _langfuse_cli()
+        return
+
+    # Plain eval (no Langfuse).
+    import asyncio
+    from eval.run_eval import cli as _eval_cli
+    argv = ["eval", "--model", model, "--judge", judge, "--judge-model", judge_model]
+    if base_url:
+        argv += ["--base-url", base_url]
+    if case:
+        argv += ["--case", case]
+    if verbose:
+        argv.append("--verbose")
+    if thinking:
+        argv.append("--thinking")
+    if timeout != 120.0:
+        argv += ["--timeout", str(timeout)]
+    if judge_base_url:
+        argv += ["--judge-base-url", judge_base_url]
+    sys.argv = argv
+    _eval_cli()
 
 
 if __name__ == "__main__":

@@ -29,17 +29,31 @@ from ._otel import (
 )
 from ._session import MlflowSessionLogger
 from ._spans import invoke_with_mlflow_span
+from .middleware import (
+    LangfuseMiddleware,
+    MLflowMiddleware,
+    OTelMiddleware,
+    UsageMiddleware,
+)
 
 __all__ = [
+    # session logger
     "MlflowSessionLogger",
     "invoke_with_mlflow_span",
+    # otel
     "setup_otel_tracer",
     "get_tracer",
     "agent_turn_span",
     "tool_call_span",
     "_SESSION_ID_VAR",
+    # context
     "trace_mode",
     "trace_text",
     "trim_preview",
     "update_trace_context",
+    # middleware
+    "LangfuseMiddleware",
+    "MLflowMiddleware",
+    "OTelMiddleware",
+    "UsageMiddleware",
 ]

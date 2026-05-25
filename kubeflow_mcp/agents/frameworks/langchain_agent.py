@@ -26,22 +26,19 @@ import warnings
 from collections.abc import Callable
 from typing import Any
 
+
 from kubeflow_mcp.agents.core.tool_dispatch import (
     compact_execute_tool_result,
     normalize_execute_tool_args,
 )
-from kubeflow_mcp.agents.frameworks._confirm import (
-    make_console_confirm_handler,
-    set_confirm_handler,
-    wrap_with_confirm,
-)
+from kubeflow_mcp.agents.core.confirm import wrap_with_confirm
+from kubeflow_mcp.agents.core.tools import get_system_prompt, load_tools
 from kubeflow_mcp.agents.frameworks._observability import is_local_ollama_model, setup_langsmith
 from kubeflow_mcp.agents.frameworks._thinking import (
     apply_thinking_to_chat_litellm,
     extract_thinking_delta,
     is_answer_content_token,
 )
-from kubeflow_mcp.agents.frameworks._tools import get_system_prompt, load_tools
 from kubeflow_mcp.agents.observability import (
     MlflowSessionLogger,
     invoke_with_mlflow_span,
@@ -50,7 +47,6 @@ from kubeflow_mcp.agents.observability import (
     update_trace_context,
 )
 from kubeflow_mcp.agents.runtime.repl_commands import (
-    REPL_EXIT_COMMANDS,
     CommonReplHandlers,
     handle_common_repl_command,
 )
@@ -60,16 +56,26 @@ from kubeflow_mcp.agents.runtime.session_state import (
     import_session_snapshot,
     reset_token_totals,
 )
+from kubeflow_mcp.agents.observability.middleware import (
+    LangfuseMiddleware,
+    MLflowMiddleware,
+    OTelMiddleware,
+    UsageMiddleware,
+)
+from kubeflow_mcp.agents.core.confirm import ConfirmMiddleware
+from kubeflow_mcp.agents.runtime.session import AgentSession
 
 _SPHINX_BUILD = "sphinx" in sys.modules
 
 try:
+    from langchain_core.callbacks.base import BaseCallbackHandler
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
 except ImportError:
     if not _SPHINX_BUILD:
         sys.exit("Error: install kubeflow-mcp[agents-langchain]")
+    BaseCallbackHandler = None  # type: ignore[misc, assignment]
     Panel = None  # type: ignore[misc, assignment]
     Table = None  # type: ignore[misc, assignment]
     Text = None  # type: ignore[misc, assignment]
@@ -78,13 +84,12 @@ from kubeflow_mcp.agents.terminal_ui import (  # noqa: E402
     format_tool_result_display,
     get_console,
     print_assistant_panel,
+    print_confirm_gate,
     print_error_panel,
-    print_goodbye,
     print_tip,
     print_tool_call_panel,
     print_tool_result_panel,
     print_tools_table,
-    print_user_panel,
     print_welcome_panel,
     setup_readline_history,
 )
@@ -340,9 +345,32 @@ def _multi_call_blocked_reply() -> str:
 
 
 
-def _sanitize_react_output(text: str) -> str:
+def _extract_text_from_content_blocks(content: Any) -> str:
+    """Extract plain text from vLLM/Anthropic-style content block lists.
+
+    vLLM with Qwen3 thinking returns content as a list like:
+      ['', {'type': 'thinking', 'thinking': '...'}, "actual answer"]
+    Strip thinking blocks and join only text items.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            # skip type="thinking" blocks
+        return "".join(parts)
+    return str(content)
+
+
+def _sanitize_react_output(text: Any) -> str:
+    if not isinstance(text, str):
+        text = _extract_text_from_content_blocks(text)
     if not text:
-        return text
+        return ""
     marker_idx = text.rfind("Final Answer:")
     if marker_idx >= 0:
         return text[marker_idx + len("Final Answer:") :].strip()
@@ -430,7 +458,9 @@ def _make_react_tool(fn: Callable[..., Any], description: str):
                     }
                     return json.dumps(payload, indent=2, default=str)
         try:
-            result = invoke_with_mlflow_span(fn, args, framework="langchain")
+            _rc = get_console()
+            with _rc.status(f"[dim]running {fn.__name__}…[/dim]", spinner="dots"):
+                result = invoke_with_mlflow_span(fn, args, framework="langchain")
             if fn.__name__ == "execute_tool":
                 _TURN_POLICY["tool_calls"] += 1
         except Exception as exc:
@@ -444,6 +474,38 @@ def _make_react_tool(fn: Callable[..., Any], description: str):
     return Tool(name=fn.__name__, func=run, description=desc)
 
 
+def _vllm_safe_formatter(
+    intermediate_steps: Any,
+) -> list[Any]:
+    """Wrap format_to_tool_messages to sanitize AIMessages for vLLM.
+
+    langchain_litellm injects reasoning tokens into AIMessage content as typed
+    blocks: [{"type": "thinking", "thinking": "..."}, {"type": "text", ...}].
+    vLLM rejects "thinking" as an invalid content part type on the second LLM
+    call. This formatter strips all non-text blocks and collapses content to a
+    plain string before the scratchpad reaches vLLM.
+    """
+    from langchain_classic.agents.format_scratchpad.tools import format_to_tool_messages
+    from langchain_core.messages import AIMessage
+
+    messages = format_to_tool_messages(intermediate_steps)
+    result = []
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            content = msg.content
+            if not content:
+                msg = msg.model_copy(update={"content": " "})
+            elif isinstance(content, list):
+                text = " ".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ).strip() or " "
+                msg = msg.model_copy(update={"content": text})
+        result.append(msg)
+    return result
+
+
 def _build_executor(
     *,
     model: str,
@@ -453,6 +515,7 @@ def _build_executor(
     system_prompt: str,
     run_config: dict[str, Any],
     memory: Any,
+    use_vllm_safe_formatter: bool = False,
 ) -> tuple[Any, list[Any], str]:
     """ReAct for local Ollama; native tool-calling for cloud models."""
     from langchain_classic.agents import (
@@ -473,23 +536,66 @@ def _build_executor(
         agent = create_react_agent(llm, lc_tools, prompt)
         extra = {"handle_parsing_errors": _PARSING_HINT}
     else:
-        lc_tools = [
-            StructuredTool.from_function(
-                func=fn,
+        def _make_tool_calling_tool(fn: Callable[..., Any], desc: str) -> Any:
+            """StructuredTool wrapper that adds OTel + MLflow spans (mirrors _make_react_tool)."""
+            import inspect as _inspect
+            _has_confirmed = "confirmed" in _inspect.signature(fn).parameters
+
+            def run(**kwargs: Any) -> str:
+                _rc = get_console()
+                # Mutating tools (confirmed param) may show a Rich Confirm.ask() dialog.
+                # Running that inside console.status() deadlocks stdin — skip the spinner.
+                if _has_confirmed:
+                    result = invoke_with_mlflow_span(fn, kwargs, framework="langchain")
+                else:
+                    with _rc.status(f"[dim]running {fn.__name__}…[/dim]", spinner="dots"):
+                        result = invoke_with_mlflow_span(fn, kwargs, framework="langchain")
+                result = _compact_react_result(fn.__name__, result)
+                if isinstance(result, (dict, list)):
+                    return json.dumps(result, indent=2, default=str)
+                return str(result)
+
+            run.__name__ = fn.__name__
+            # Unwrap confirm/audit layers to expose the original tool signature to
+            # StructuredTool — otherwise the schema sees (**kwargs) and the model
+            # wraps all arguments under a "kwargs" key causing TypeError.
+            import functools
+            original = fn
+            while hasattr(original, "__wrapped__"):
+                original = original.__wrapped__
+            functools.update_wrapper(run, original)
+            run.__name__ = fn.__name__  # keep the registered tool name
+            return StructuredTool.from_function(
+                func=run,
                 name=fn.__name__,
-                description=descriptions.get(fn.__name__, fn.__doc__ or fn.__name__),
+                description=desc,
             )
+
+        lc_tools = [
+            _make_tool_calling_tool(fn, descriptions.get(fn.__name__, fn.__doc__ or fn.__name__))
             for fn in wrapped
         ]
+        tool_calling_system = (
+            system_prompt
+            + "\n\nFor greetings, small talk, or general questions that do not require "
+            "live Kubernetes or training data, reply directly WITHOUT calling any tool."
+        )
         prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_prompt),
+                ("system", tool_calling_system),
                 MessagesPlaceholder("chat_history", optional=True),
                 ("human", "{input}"),
                 MessagesPlaceholder("agent_scratchpad"),
             ]
         )
-        agent = create_tool_calling_agent(llm, lc_tools, prompt)
+        from langchain_classic.agents.format_scratchpad.tools import format_to_tool_messages
+
+        agent = create_tool_calling_agent(
+            llm,
+            lc_tools,
+            prompt,
+            message_formatter=_vllm_safe_formatter if use_vllm_safe_formatter else format_to_tool_messages,
+        )
         extra = {}
 
     executor = AgentExecutor(
@@ -497,6 +603,7 @@ def _build_executor(
         tools=lc_tools,
         verbose=False,
         max_iterations=15,
+        max_execution_time=None,  # no wall-clock cap — K8s tool timeout (45s) prevents hangs
         memory=memory,
         return_intermediate_steps=False,
         tags=run_config["tags"],
@@ -623,18 +730,23 @@ class _UsageTracker:
 
 
 
+_THINKING_LINE_CAP = 8   # max lines of thinking shown per LLM call
+
+
 def _make_thinking_display_handler(console, enabled_holder: list[bool]):
     """LangChain callback: stream reasoning_content to the terminal."""
-    from langchain_core.callbacks.base import BaseCallbackHandler
-
     class _ThinkingHandler(BaseCallbackHandler):
         def __init__(self) -> None:
             self._active = False
+            self._lines = 0      # newlines rendered so far this call
+            self._capped = False # True once the line cap is hit
 
         def reset(self) -> None:
             if self._active:
                 console.print()
             self._active = False
+            self._lines = 0
+            self._capped = False
 
         def on_llm_new_token(self, token, *, chunk=None, **kwargs) -> None:
             if not enabled_holder[0]:
@@ -643,8 +755,25 @@ def _make_thinking_display_handler(console, enabled_holder: list[bool]):
             if delta:
                 if not self._active:
                     self._active = True
+                    self._lines = 0
+                    self._capped = False
                     console.print()
                     console.print("[dim italic]💭 ", end="")
+                if self._capped:
+                    return
+                # Count newlines to enforce the line cap
+                newlines_in_delta = delta.count("\n")
+                if self._lines + newlines_in_delta >= _THINKING_LINE_CAP:
+                    # Print up to the cap then truncate
+                    remaining = _THINKING_LINE_CAP - self._lines
+                    truncated = "\n".join(delta.split("\n")[:remaining])
+                    if truncated:
+                        console.print(f"[dim italic]{truncated}[/dim italic]", end="")
+                    console.print()
+                    console.print("[dim]… (thinking truncated)[/dim]")
+                    self._capped = True
+                    return
+                self._lines += newlines_in_delta
                 console.print(f"[dim italic]{delta}[/dim italic]", end="")
             elif self._active and is_answer_content_token(token, chunk):
                 console.print()
@@ -689,14 +818,26 @@ def _is_internal_observation(tool: str | None, observation: str) -> bool:
     return obs.startswith("Invalid Format:") or obs.startswith("Invalid or incomplete")
 
 
+def _is_preview_result(observation: str) -> bool:
+    """Return True when a tool returned a confirmed=False preview (not yet submitted)."""
+    try:
+        data = json.loads(observation)
+        inner = data.get("data", {}) if isinstance(data, dict) else {}
+        return bool(inner.get("preview") or inner.get("confirmed") is False)
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 def _render_stream_chunk(console, chunk: dict[str, Any]) -> str | None:
     """Render tool call / observation panels; return last real tool observation."""
     last_obs: str | None = None
     for action in chunk.get("actions") or []:
         tool = getattr(action, "tool", None)
         if tool and tool not in _INTERNAL_TOOLS:
-            args = _normalize_react_args(
-                tool, _parse_react_tool_input(getattr(action, "tool_input", "") or "")
+            raw_input = getattr(action, "tool_input", "") or ""
+            # ToolCalling agents pass tool_input as a dict; ReAct passes a JSON string.
+            args = raw_input if isinstance(raw_input, dict) else _normalize_react_args(
+                tool, _parse_react_tool_input(raw_input)
             )
             print_tool_call_panel(console, tool, args)
 
@@ -705,7 +846,10 @@ def _render_stream_chunk(console, chunk: dict[str, Any]) -> str | None:
         tool = getattr(action, "tool", None) if action else None
         obs = getattr(step, "observation", None)
         if obs and not _is_internal_observation(tool, obs):
-            print_tool_result_panel(console, format_tool_result_display(obs))
+            if _is_preview_result(obs):
+                print_confirm_gate(console, obs)
+            else:
+                print_tool_result_panel(console, obs)
             last_obs = obs
 
     for action, observation in chunk.get("intermediate_step") or []:
@@ -716,7 +860,7 @@ def _render_stream_chunk(console, chunk: dict[str, Any]) -> str | None:
             )
             print_tool_call_panel(console, tool, args)
         if observation and not _is_internal_observation(tool, observation):
-            print_tool_result_panel(console, format_tool_result_display(observation))
+            print_tool_result_panel(console, observation)
             last_obs = observation
     return last_obs
 
@@ -745,14 +889,16 @@ def _fallback_from_observation(observation: str, user_query: str) -> str:
     return json.dumps(data, indent=2, default=str)[:2000]
 
 
+
 def _run_turn_streaming(
     executor,
     line: str,
     run_config: dict[str, Any],
     console,
     thinking_handler: Any | None = None,
+    is_react: bool = True,
 ) -> str:
-    """Stream ReAct steps; show tool panels live, return final answer."""
+    """Stream agent steps via sync .stream(); thinking display handled by registered callback."""
     if thinking_handler is not None:
         thinking_handler.reset()
     _TURN_POLICY["allow_multi_step"] = _allow_multi_step_for_query(line)
@@ -760,7 +906,35 @@ def _run_turn_streaming(
     output = ""
     last_obs: str | None = None
     parse_retries = 0
-    for chunk in executor.stream({"input": line}, config=run_config):
+
+    # ToolCalling (cloud) emits a JSON function call with no streamed text, so
+    # there is no visible feedback during LLM inference. Show a spinner that
+    # must stop before thinking tokens print — Rich Live suppresses other console
+    # output while the spinner is active. A _SpinnerStopper callback stops it on
+    # the very first on_llm_new_token, before the thinking handler renders anything.
+    # ReAct (Ollama) streams its chain-of-thought directly — no spinner needed.
+    _status_holder: list[Any] = [None]
+
+    class _SpinnerStopper(BaseCallbackHandler):
+        def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            s = _status_holder[0]
+            if s is not None:
+                s.stop()
+                _status_holder[0] = None
+
+    if not is_react:
+        _status_holder[0] = console.status("[dim]Thinking…[/dim]", spinner="dots")
+        _status_holder[0].start()
+
+    turn_config = {
+        **run_config,
+        "callbacks": [*run_config.get("callbacks", []), _SpinnerStopper()],
+    }
+
+    for chunk in executor.stream({"input": line}, config=turn_config):
+        if _status_holder[0] is not None:
+            _status_holder[0].stop()
+            _status_holder[0] = None
         if not isinstance(chunk, dict):
             continue
         obs = _render_stream_chunk(console, chunk)
@@ -773,7 +947,9 @@ def _run_turn_streaming(
             if getattr(action, "tool", None) in _INTERNAL_TOOLS:
                 parse_retries += 1
         if chunk.get("output"):
-            output = _sanitize_react_output(str(chunk["output"]))
+            output = _sanitize_react_output(_extract_text_from_content_blocks(chunk["output"]))
+    if _status_holder[0] is not None:  # stopped before any chunk (e.g. empty stream)
+        _status_holder[0].stop()
     if not output.strip() and last_obs:
         output = _fallback_from_observation(last_obs, line)
         if parse_retries:
@@ -790,10 +966,11 @@ def _run_turn_blocking(executor, line: str, run_config: dict[str, Any]) -> str:
     _TURN_POLICY["allow_multi_step"] = _allow_multi_step_for_query(line)
     _TURN_POLICY["tool_calls"] = 0
     result = executor.invoke({"input": line}, config=run_config)
-    output = result.get("output", "") if isinstance(result, dict) else str(result)
+    raw = result.get("output", "") if isinstance(result, dict) else result
+    output = _extract_text_from_content_blocks(raw)
     if _is_multi_call_blocked_observation(output):
         return _multi_call_blocked_reply()
-    return _sanitize_react_output(str(output))
+    return _sanitize_react_output(output)
 
 
 def _build_run_config(
@@ -876,121 +1053,6 @@ def _import_langchain_session(memory, tracker: _UsageTracker, path: str) -> int:
     return restored
 
 
-def _run_langchain_repl(  # noqa: C901
-    *,
-    console,
-    executor_holder: dict[str, Any],
-    memory,
-    tracker: _UsageTracker,
-    model: str,
-    tool_mode: str,
-    run_config: dict[str, Any],
-    thinking_holder: list[bool],
-    thinking_handler: Any,
-    mlflow_turn_logger: MlflowSessionLogger | None,
-    rebuild: Callable[[], None],
-) -> None:
-    def _on_tools() -> None:
-        print_tools_table(
-            console,
-            [(tool.name, tool.description or "") for tool in executor_holder["lc_tools"]],
-            header_style="bold cyan",
-        )
-        print_tip(console, f"Mode: {tool_mode}  |  Total tools: {len(executor_holder['lc_tools'])}")
-
-    def _on_think() -> None:
-        thinking_holder[0] = not thinking_holder[0]
-        rebuild()
-        state = "on" if thinking_holder[0] else "off"
-        print_tip(console, f"Thinking mode: {state}  (agent: {executor_holder['agent_mode']})")
-
-    def _on_export() -> None:
-        session = _build_langchain_export_payload(
-            memory,
-            model=model,
-            tool_mode=tool_mode,
-            tracker=tracker,
-        )
-        out = export_session_snapshot(session)
-        print_tip(console, f"Session exported → {out}")
-
-    def _on_import(path: str) -> None:
-        try:
-            restored = _import_langchain_session(memory, tracker, path)
-            print_tip(console, f"Session imported ← {path}  ({restored} turns restored)")
-        except Exception as exc:
-            print_tip(console, f"Import error: {exc}", style="red")
-
-    def _on_clear() -> None:
-        memory.clear()
-        reset_token_totals(tracker)
-        print_tip(console, "Conversation cleared.")
-
-    def _on_unknown(command: str) -> None:
-        print_tip(console, f"Unknown command: {command!r}. Try /tools, /think, /export, /import, /clear.")
-
-    common_handlers = CommonReplHandlers(
-        on_tools=_on_tools,
-        on_think=_on_think,
-        on_export=_on_export,
-        on_import=_on_import,
-        on_clear=_on_clear,
-        on_unknown=_on_unknown,
-    )
-
-    while True:
-        try:
-            console.print()
-            console.print("[bold bright_blue]You[/bold bright_blue] ", end="")
-            line = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print_goodbye(console)
-            break
-
-        if not line:
-            continue
-        if line.lower() in REPL_EXIT_COMMANDS:
-            print_goodbye(console)
-            break
-
-        if handle_common_repl_command(line, common_handlers):
-            continue
-
-        preflight_hint = _preflight_input_guard_reply(line)
-        if preflight_hint:
-            print_assistant_panel(console, preflight_hint)
-            continue
-
-        print_user_panel(console, line)
-        try:
-            tracker.reset_turn()
-            executor = executor_holder["executor"]
-            try:
-                output = _run_turn_streaming(
-                    executor, line, run_config, console, thinking_handler=thinking_handler
-                )
-            except TypeError:
-                output = _run_turn_blocking(executor, line, run_config)
-            tracker.finish_turn()
-            if output.strip():
-                print_assistant_panel(console, output)
-            _print_turn_stats(console, tracker, model)
-            if mlflow_turn_logger is not None:
-                mlflow_turn_logger.log_turn(
-                    user_input=line,
-                    assistant_output=output,
-                    tool_names=tracker.turn_tool_names,
-                    tool_call_count=tracker.turn_tools,
-                    llm_call_count=tracker.turn_llm_calls,
-                    input_tokens=tracker.turn_input,
-                    output_tokens=tracker.turn_output,
-                    duration_s=tracker.turn_duration,
-                )
-        except KeyboardInterrupt:
-            print_tip(console, "\nInterrupted.")
-        except Exception as exc:
-            print_error_panel(console, exc)
-
 
 def run_langchain_chat(
     model: str,
@@ -1010,8 +1072,29 @@ def run_langchain_chat(
         raise RuntimeError(msg) from exc
 
     setup_readline_history()
+    if base_url:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Disable LiteLLM's built-in observability auto-callbacks — we manage our
+    # own via MlflowSessionLogger and LangfuseMiddleware. Without this, LiteLLM
+    # detects MLFLOW_TRACKING_URI / LANGFUSE_* env vars and adds its own callbacks,
+    # which causes AttributeError on langfuse 3+/4+ (expects langfuse.version) and
+    # spams the console with connection-refused / auth warnings.
+    try:
+        import litellm as _litellm
+        _litellm.success_callback = [
+            cb for cb in _litellm.success_callback
+            if not any(s in str(cb).lower() for s in ("mlflow", "langfuse"))
+        ]
+        _litellm.failure_callback = [
+            cb for cb in _litellm.failure_callback
+            if not any(s in str(cb).lower() for s in ("mlflow", "langfuse"))
+        ]
+    except Exception:
+        pass
+
     console = get_console()
-    set_confirm_handler(make_console_confirm_handler(console))
     os.environ["KUBEFLOW_MCP_MODEL"] = model
     tracker = _UsageTracker(model)
     mlflow_turn_logger = MlflowSessionLogger(model=model, tool_mode=tool_mode, framework="langchain")
@@ -1020,13 +1103,26 @@ def run_langchain_chat(
     run_config = _build_run_config(tracker, model, tool_mode, thinking_handler)
 
     tool_fns, descriptions = load_tools(tool_mode)
-    system_prompt = get_system_prompt()
+    # Compact tier for local Ollama — fewer tokens → faster inference.
+    tier = "compact" if is_local_ollama_model(model) else "full"
+    system_prompt = get_system_prompt(instruction_tier=tier)
     executor_holder: dict[str, Any] = {}
+
+    # vLLM endpoints (RHOAI, local) return AIMessages with content='' when
+    # thinking is active. The safe formatter replaces empty content with a
+    # single space before the scratchpad is sent back to vLLM, which allows
+    # thinking to be enabled without triggering BadRequestError.
+    is_vllm = bool(base_url)
 
     def rebuild() -> None:
         llm_kwargs: dict[str, Any] = {"model": model, "streaming": True, "num_retries": num_retries}
         if base_url:
             llm_kwargs["api_base"] = base_url
+            # vLLM Qwen3: enable_thinking must be sent via extra_body. The empty-content
+            # scratchpad issue is handled by _vllm_safe_formatter in _build_executor.
+            llm_kwargs.setdefault("model_kwargs", {})["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": thinking_holder[0]}
+            }
         apply_thinking_to_chat_litellm(llm_kwargs, enabled=thinking_holder[0], model=model)
         llm = ChatLiteLLM(**llm_kwargs)
         executor, lc_tools, agent_mode = _build_executor(
@@ -1036,28 +1132,72 @@ def run_langchain_chat(
             descriptions=descriptions,
             system_prompt=system_prompt,
             run_config=run_config,
+            use_vllm_safe_formatter=is_vllm,
             memory=memory,
         )
         executor_holder["executor"] = executor
         executor_holder["lc_tools"] = lc_tools
         executor_holder["agent_mode"] = agent_mode
 
+    class _NormalizedMemory(ConversationBufferMemory):
+        """ConversationBufferMemory with two native LangChain enhancements:
+
+        1. ``save_context`` normalizes AIMessage content blocks to plain text.
+           Models like Qwen3 on vLLM return content as a typed-block list
+           ``[{'type': 'thinking', ...}, {'type': 'text', 'text': '...'}]``.
+           Storing raw causes pydantic errors on the next turn.
+
+        2. ``load_memory_variables`` applies ``trim_messages`` to cap history
+           within the model's context window before each call.
+        """
+
+        def save_context(self, inputs: dict, outputs: dict) -> None:
+            normalized = {
+                k: _extract_text_from_content_blocks(v) if not isinstance(v, str) else v
+                for k, v in outputs.items()
+            }
+            super().save_context(inputs, normalized)
+
+        def load_memory_variables(self, inputs: dict) -> dict:
+            variables = super().load_memory_variables(inputs)
+            history = variables.get(self.memory_key)
+            if isinstance(history, list) and len(history) > 4:
+                try:
+                    from langchain_core.messages import trim_messages
+                    variables[self.memory_key] = trim_messages(
+                        history,
+                        max_tokens=6000,
+                        strategy="last",
+                        token_counter=lambda msgs: sum(
+                            len(str(getattr(m, "content", ""))) // 3 for m in msgs
+                        ),
+                        start_on="human",
+                        include_system=False,
+                        allow_partial=False,
+                    )
+                except Exception:
+                    pass  # never block on trim failure — history is better than nothing
+            return variables
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        memory = ConversationBufferMemory(memory_key="chat_history", output_key="output")
+        memory = _NormalizedMemory(
+            memory_key="chat_history",
+            output_key="output",
+            return_messages=True,
+        )
 
     rebuild()
     agent_mode = executor_holder["agent_mode"]
     lc_tools = executor_holder["lc_tools"]
 
     backend_label = base_url or "cloud / local auto-detect"
-    tracing = setup_langsmith(langfuse=langfuse)
+    tracing = setup_langsmith(langsmith=False)  # LangSmith only when LANGCHAIN_TRACING_V2 is set externally
 
     print_welcome_panel(
-        panel_title="kubeflow-mcp · LangChain",
+        panel_title="kubeflow-mcp · LiteLLM · LangChain",
         border_style="bright_cyan",
         rows=[
-            ("bold bright_cyan", "Kubeflow MCP — LangChain + LiteLLM"),
             ("white", f"Model   : {model}"),
             ("white", f"Agent   : {agent_mode}"),
             ("white", f"Backend : {backend_label}"),
@@ -1067,7 +1207,7 @@ def run_langchain_chat(
             ("dim", "Commands: /tools  /think  /export  /import <file>  /clear  exit"),
             ("dim", f"Thinking: {'on' if thinking else 'off'} ( /think to toggle )"),
             ("dim", "Confirm gate on mutating tools (confirmed=False)"),
-            ("dim", "LangSmith: --langfuse or LANGCHAIN_TRACING_V2=true"),
+            *([("dim", "Langfuse: enabled")] if langfuse else []),
             *(
                 [("dim", f"MLflow run: {mlflow_turn_logger.run_id[:8]}…")]
                 if mlflow_turn_logger.enabled and mlflow_turn_logger.run_id
@@ -1080,19 +1220,170 @@ def run_langchain_chat(
             ),
         ],
     )
-    try:
-        _run_langchain_repl(
-            console=console,
-            executor_holder=executor_holder,
-            memory=memory,
-            tracker=tracker,
-            model=model,
-            tool_mode=tool_mode,
-            run_config=run_config,
-            thinking_holder=thinking_holder,
-            thinking_handler=thinking_handler,
-            mlflow_turn_logger=mlflow_turn_logger,
-            rebuild=rebuild,
+    runner = LangChainRunner(
+        executor_holder=executor_holder,
+        memory=memory,
+        tracker=tracker,
+        model=model,
+        tool_mode=tool_mode,
+        run_config=run_config,
+        thinking_holder=thinking_holder,
+        thinking_handler=thinking_handler,
+        rebuild_fn=rebuild,
+        console=console,
+    )
+
+    session_id = f"lc-{os.urandom(6).hex()}"
+    usage_mw = UsageMiddleware()
+    langfuse_mw = LangfuseMiddleware(session_id=session_id, model=model, framework="langchain") if langfuse else None
+    middleware = [
+        usage_mw,
+        OTelMiddleware(framework="langchain"),
+        MLflowMiddleware(mlflow_turn_logger),
+        *(([langfuse_mw]) if langfuse_mw else []),
+        ConfirmMiddleware(console),
+    ]
+
+    session = AgentSession(
+        runner=runner,
+        middleware=middleware,
+        console=console,
+        model=model,
+        tool_mode=tool_mode,
+        command_handler=runner.handle_command,
+        input_guard=_preflight_input_guard_reply,
+        extras={"thinking_holder": thinking_holder},
+    )
+    session.run()
+
+
+# ─── LangChainRunner (TurnRunner adapter) ────────────────────────────────────
+
+
+class LangChainRunner:
+    """Thin TurnRunner adapter wrapping the LangChain executor.
+
+    All LangChain-specific logic (streaming, memory, tracker, thinking) lives
+    here.  The REPL loop, OTel, MLflow, and confirm gate are handled by
+    AgentSession + middleware, keeping this class focused on execution only.
+    """
+
+    def __init__(
+        self,
+        *,
+        executor_holder: dict[str, Any],
+        memory: Any,
+        tracker: _UsageTracker,
+        model: str,
+        tool_mode: str,
+        run_config: dict[str, Any],
+        thinking_holder: list[bool],
+        thinking_handler: Any,
+        rebuild_fn: Callable[[], None],
+        console: Any,
+    ) -> None:
+        self._executor_holder = executor_holder
+        self._memory = memory
+        self._tracker = tracker
+        self._model = model
+        self._tool_mode = tool_mode
+        self._run_config = run_config
+        self._thinking_holder = thinking_holder
+        self._thinking_handler = thinking_handler
+        self._rebuild_fn = rebuild_fn
+        self._console = console
+
+    # ── TurnRunner protocol ───────────────────────────────────────────────────
+
+    def run_turn(self, ctx: Any) -> Any:
+        from kubeflow_mcp.agents.runtime.contracts import TurnResult
+
+        console = ctx.extras.get("console", self._console)
+
+        self._tracker.reset_turn()
+        executor = self._executor_holder["executor"]
+        is_react = self._executor_holder.get("agent_mode") == "ReAct"
+        try:
+            output = _run_turn_streaming(
+                executor,
+                ctx.user_input,
+                self._run_config,
+                console,
+                thinking_handler=self._thinking_handler,
+                is_react=is_react,
+            )
+        except TypeError:
+            output = _run_turn_blocking(executor, ctx.user_input, self._run_config)
+
+        self._tracker.finish_turn()
+        if output.strip():
+            print_assistant_panel(console, output)
+        _print_turn_stats(console, self._tracker, self._model)
+
+        return TurnResult(
+            text=output,
+            tool_calls=[{"name": n} for n in self._tracker.turn_tool_names],
+            usage={
+                "prompt_tokens": self._tracker.turn_input,
+                "completion_tokens": self._tracker.turn_output,
+            },
+            llm_calls=self._tracker.turn_llm_calls,
         )
-    finally:
-        mlflow_turn_logger.close()
+
+    def rebuild(self, *, model: str | None = None, tool_mode: str | None = None) -> None:
+        self._rebuild_fn()
+
+    # ── REPL command handler ──────────────────────────────────────────────────
+
+    def handle_command(self, line: str) -> bool:
+        """Return True when the input is a slash command that was handled."""
+        from kubeflow_mcp.agents.runtime.repl_commands import handle_common_repl_command, CommonReplHandlers
+
+        def _on_tools() -> None:
+            print_tools_table(
+                self._console,
+                [(t.name, t.description or "") for t in self._executor_holder["lc_tools"]],
+                header_style="bold cyan",
+            )
+            print_tip(self._console, f"Mode: {self._tool_mode}  |  Total tools: {len(self._executor_holder['lc_tools'])}")
+
+        def _on_think() -> None:
+            self._thinking_holder[0] = not self._thinking_holder[0]
+            self._rebuild_fn()
+            state = "on" if self._thinking_holder[0] else "off"
+            print_tip(self._console, f"Thinking mode: {state}  (agent: {self._executor_holder['agent_mode']})")
+
+        def _on_export() -> None:
+            session = _build_langchain_export_payload(
+                self._memory,
+                model=self._model,
+                tool_mode=self._tool_mode,
+                tracker=self._tracker,
+            )
+            out = export_session_snapshot(session)
+            print_tip(self._console, f"Session exported → {out}")
+
+        def _on_import(path: str) -> None:
+            try:
+                restored = _import_langchain_session(self._memory, self._tracker, path)
+                print_tip(self._console, f"Session imported ← {path}  ({restored} turns restored)")
+            except Exception as exc:
+                print_tip(self._console, f"Import error: {exc}", style="red")
+
+        def _on_clear() -> None:
+            self._memory.clear()
+            reset_token_totals(self._tracker)
+            print_tip(self._console, "Conversation cleared.")
+
+        def _on_unknown(command: str) -> None:
+            print_tip(self._console, f"Unknown command: {command!r}. Try /tools, /think, /export, /import, /clear.")
+
+        handlers = CommonReplHandlers(
+            on_tools=_on_tools,
+            on_think=_on_think,
+            on_export=_on_export,
+            on_import=_on_import,
+            on_clear=_on_clear,
+            on_unknown=_on_unknown,
+        )
+        return handle_common_repl_command(line, handlers)
