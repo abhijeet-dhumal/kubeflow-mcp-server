@@ -27,7 +27,8 @@ import re
 import time
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+from fastmcp.dependencies import CurrentContext
 
 from kubeflow_mcp.common.constants import (
     TOOL_NEXT_HINTS,
@@ -61,6 +62,14 @@ except ImportError:  # pragma: no cover
     SpanKind = None  # type: ignore[assignment,misc]
     _Status = None  # type: ignore[assignment,misc]
     _StatusCode = None  # type: ignore[assignment,misc]
+
+# MCP protocol version from the SDK (used as span attribute)
+try:
+    from mcp.types import LATEST_PROTOCOL_VERSION as _MCP_PROTOCOL_VERSION
+except ImportError:  # pragma: no cover
+    _MCP_PROTOCOL_VERSION = None
+
+_MCP_CTX_DEFAULT = CurrentContext()
 
 logger = logging.getLogger(__name__)
 
