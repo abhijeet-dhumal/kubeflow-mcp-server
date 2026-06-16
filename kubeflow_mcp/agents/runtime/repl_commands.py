@@ -20,6 +20,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 REPL_EXIT_COMMANDS = frozenset({"exit", "quit", "q"})
+VALID_MODES = ("full", "progressive", "semantic")
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,8 @@ class CommonReplHandlers:
     on_import: Callable[[str], None]
     on_clear: Callable[[], None]
     on_unknown: Callable[[str], None]
+    on_mode: Callable[[str], None] | None = None
+    on_help: Callable[[], None] | None = None
 
 
 def handle_common_repl_command(line: str, handlers: CommonReplHandlers) -> bool:
@@ -54,6 +57,19 @@ def handle_common_repl_command(line: str, handlers: CommonReplHandlers) -> bool:
         return True
     if line == "/clear":
         handlers.on_clear()
+        return True
+    if line == "/help":
+        if handlers.on_help is not None:
+            handlers.on_help()
+        else:
+            handlers.on_unknown(line)
+        return True
+    if line.startswith("/mode"):
+        arg = line[len("/mode") :].strip()
+        if handlers.on_mode is not None:
+            handlers.on_mode(arg)
+        else:
+            handlers.on_unknown(line)
         return True
     if line.startswith("/"):
         handlers.on_unknown(line)

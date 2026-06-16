@@ -1102,7 +1102,11 @@ def run_langchain_chat(
     thinking_handler = _make_thinking_display_handler(console, thinking_holder)
     run_config = _build_run_config(tracker, model, tool_mode, thinking_handler)
 
-    tool_fns, descriptions = load_tools(tool_mode)
+    # Mutable holder so /mode can swap tool sets without rebuilding the closure.
+    tool_holder: dict[str, Any] = {}
+    _initial_fns, _initial_descs = load_tools(tool_mode)
+    tool_holder.update({"fns": _initial_fns, "descs": _initial_descs, "mode": tool_mode})
+
     # Compact tier for local Ollama — fewer tokens → faster inference.
     tier = "compact" if is_local_ollama_model(model) else "full"
     system_prompt = get_system_prompt(instruction_tier=tier)
@@ -1128,8 +1132,8 @@ def run_langchain_chat(
         executor, lc_tools, agent_mode = _build_executor(
             model=model,
             llm=llm,
-            tool_fns=tool_fns,
-            descriptions=descriptions,
+            tool_fns=tool_holder["fns"],
+            descriptions=tool_holder["descs"],
             system_prompt=system_prompt,
             run_config=run_config,
             use_vllm_safe_formatter=is_vllm,
@@ -1138,6 +1142,11 @@ def run_langchain_chat(
         executor_holder["executor"] = executor
         executor_holder["lc_tools"] = lc_tools
         executor_holder["agent_mode"] = agent_mode
+
+    def change_mode(new_mode: str) -> None:
+        new_fns, new_descs = load_tools(new_mode)
+        tool_holder.update({"fns": new_fns, "descs": new_descs, "mode": new_mode})
+        rebuild()
 
     class _NormalizedMemory(ConversationBufferMemory):
         """ConversationBufferMemory with two native LangChain enhancements:
@@ -1204,7 +1213,7 @@ def run_langchain_chat(
             ("white", f"Mode    : {tool_mode}  ({len(lc_tools)} tools)"),
             *([("dim", f"Tracing : {tracing}")] if tracing else []),
             ("dim", ""),
-            ("dim", "Commands: /tools  /think  /export  /import <file>  /clear  exit"),
+            ("dim", "Commands: /help  /tools  /mode <mode>  /think  /export  /import <file>  /clear  exit"),
             ("dim", f"Thinking: {'on' if thinking else 'off'} ( /think to toggle )"),
             ("dim", "Confirm gate on mutating tools (confirmed=False)"),
             *([("dim", "Langfuse: enabled")] if langfuse else []),
@@ -1226,10 +1235,12 @@ def run_langchain_chat(
         tracker=tracker,
         model=model,
         tool_mode=tool_mode,
+        tool_holder=tool_holder,
         run_config=run_config,
         thinking_holder=thinking_holder,
         thinking_handler=thinking_handler,
         rebuild_fn=rebuild,
+        change_mode_fn=change_mode,
         console=console,
     )
 
@@ -1276,10 +1287,12 @@ class LangChainRunner:
         tracker: _UsageTracker,
         model: str,
         tool_mode: str,
+        tool_holder: dict[str, Any] | None = None,
         run_config: dict[str, Any],
         thinking_holder: list[bool],
         thinking_handler: Any,
         rebuild_fn: Callable[[], None],
+        change_mode_fn: Callable[[str], None] | None = None,
         console: Any,
     ) -> None:
         self._executor_holder = executor_holder
@@ -1287,10 +1300,12 @@ class LangChainRunner:
         self._tracker = tracker
         self._model = model
         self._tool_mode = tool_mode
+        self._tool_holder = tool_holder
         self._run_config = run_config
         self._thinking_holder = thinking_holder
         self._thinking_handler = thinking_handler
         self._rebuild_fn = rebuild_fn
+        self._change_mode_fn = change_mode_fn
         self._console = console
 
     # ── TurnRunner protocol ───────────────────────────────────────────────────
@@ -1332,6 +1347,13 @@ class LangChainRunner:
 
     def rebuild(self, *, model: str | None = None, tool_mode: str | None = None) -> None:
         self._rebuild_fn()
+
+    def change_mode(self, new_mode: str) -> None:
+        """Switch tool mode, reload tools, and rebuild the executor."""
+        if self._change_mode_fn is None:
+            return
+        self._change_mode_fn(new_mode)
+        self._tool_mode = new_mode
 
     # ── REPL command handler ──────────────────────────────────────────────────
 
@@ -1375,8 +1397,66 @@ class LangChainRunner:
             reset_token_totals(self._tracker)
             print_tip(self._console, "Conversation cleared.")
 
+        def _on_mode(arg: str) -> None:
+            from kubeflow_mcp.agents.runtime.repl_commands import VALID_MODES
+
+            if not arg:
+                tool_count = len(self._executor_holder.get("lc_tools") or [])
+                print_tip(
+                    self._console,
+                    f"Current mode: {self._tool_mode}  ({tool_count} tools)  |  "
+                    f"Available: {', '.join(VALID_MODES)}  |  Usage: /mode <mode>",
+                )
+                return
+            new_mode = arg.lower()
+            if new_mode not in VALID_MODES:
+                print_tip(
+                    self._console,
+                    f"Unknown mode {new_mode!r}. Choose: {', '.join(VALID_MODES)}",
+                    style="red",
+                )
+                return
+            if new_mode == self._tool_mode:
+                print_tip(self._console, f"Already in {new_mode!r} mode.")
+                return
+            print_tip(self._console, f"Switching to {new_mode!r} mode…", style="dim")
+            try:
+                self.change_mode(new_mode)
+            except Exception as exc:
+                print_tip(self._console, f"Mode switch failed: {exc}", style="red")
+                return
+            tool_count = len(self._executor_holder.get("lc_tools") or [])
+            print_tip(self._console, f"Mode: {new_mode}  ({tool_count} tools)")
+
+        def _on_help() -> None:
+            from kubeflow_mcp.agents.runtime.repl_commands import VALID_MODES
+
+            rows = [
+                ("/help", "Show this help message"),
+                ("/tools", "List active tools for the current mode"),
+                (f"/mode [{' | '.join(VALID_MODES)}]", "Show or switch tool mode (no arg = show current)"),
+                ("/think", "Toggle chain-of-thought thinking display on/off"),
+                ("/export", "Save current session to a JSON snapshot file"),
+                ("/import <file>", "Restore session from a JSON snapshot file"),
+                ("/clear", "Clear conversation history and token counters"),
+                ("exit / quit / q", "Exit the agent"),
+            ]
+            self._console.print()
+            from rich.table import Table
+            t = Table(show_header=False, box=None, padding=(0, 2))
+            t.add_column(style="bright_white", no_wrap=True, min_width=32)
+            t.add_column(style="dim")
+            for cmd, desc in rows:
+                t.add_row(cmd, desc)
+            self._console.print(t)
+            self._console.print()
+
         def _on_unknown(command: str) -> None:
-            print_tip(self._console, f"Unknown command: {command!r}. Try /tools, /think, /export, /import, /clear.")
+            print_tip(
+                self._console,
+                f"Unknown command: {command!r}. "
+                "Try /help  /tools  /mode <mode>  /think  /export  /import <file>  /clear",
+            )
 
         handlers = CommonReplHandlers(
             on_tools=_on_tools,
@@ -1385,5 +1465,7 @@ class LangChainRunner:
             on_import=_on_import,
             on_clear=_on_clear,
             on_unknown=_on_unknown,
+            on_mode=_on_mode,
+            on_help=_on_help,
         )
         return handle_common_repl_command(line, handlers)
