@@ -21,6 +21,7 @@ import tempfile
 import textwrap
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from kubeflow.trainer.constants.constants import DEFAULT_PIP_INDEX_URLS
@@ -42,6 +43,73 @@ from kubeflow_mcp.core.security import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# MCP-layer SDK patches — applied once at import time.
+# These fix known SDK bugs without modifying venv files (survives reinstalls).
+# ---------------------------------------------------------------------------
+try:
+    import kubeflow.trainer.backends.kubernetes.utils as _ku_utils
+
+    _orig_get_trainer_cr = _ku_utils.get_trainer_cr_from_builtin_trainer
+
+    def _patched_get_trainer_cr(runtime, trainer, initializer=None):
+        """Wrap the SDK function to apply two MCP-layer fixes for OpenShift.
+
+        Fix 1 — trailing '/.' in dataset.data_dir:
+          The SDK constructs ``dataset.data_dir=/workspace/dataset/.`` for
+          top-level HF dataset URIs (e.g. ``hf://tatsu-lab/alpaca``). The dot
+          causes HuggingFace datasets to treat the path as an HF URI segment,
+          producing invalid double-slash URIs. Stripping it makes torchtune load
+          the already-downloaded parquet files from the PVC correctly.
+
+        Fix 2 — HF_HOME on the trainer node:
+          OpenShift's restricted SCC prevents writes to ``/.cache``. Setting
+          ``HF_HOME=/workspace/.hf`` redirects the HF cache to the shared PVC
+          which is always writable. This is set on ``spec.trainer.env`` (not via
+          runtimePatches, which are blocked by the admission webhook).
+        """
+        from kubeflow_trainer_api import models as _ku_models
+
+        cr = _orig_get_trainer_cr(runtime, trainer, initializer)
+
+        if cr.args:
+            # The Kubeflow Trainer admission webhook regenerates dataset.data_dir from the
+            # initializer's storageUri, so we cannot replace it. Instead:
+            #  1. Strip the trailing '/.' from data_dir (SDK bug — os.path.join(path, ".")).
+            #  2. Append dataset.source=<local_path> as an extra OmegaConf override.
+            #     OmegaConf applies CLI args in order; dataset.source overrides the default
+            #     "yahma/alpaca-cleaned" hardcoded in alpaca_cleaned_dataset(), making
+            #     load_dataset() treat it as a local directory instead of an HF Hub repo.
+            #     The webhook preserves unknown extra args, so this survives admission.
+            fixed_args = []
+            source_to_add: str | None = None
+            for arg in cr.args:
+                if arg.startswith("dataset.data_dir="):
+                    local_path = arg.split("=", 1)[1].rstrip("/.")
+                    fixed_args.append(f"dataset.data_dir={local_path}")
+                    source_to_add = f"dataset.source={local_path}"
+                else:
+                    fixed_args.append(arg)
+            if source_to_add:
+                fixed_args.append(source_to_add)
+                # Clear data_dir after setting source. With a local source,
+                # load_dataset raises "data_dir must be relative" for absolute paths.
+                # Setting null lets alpaca_cleaned_dataset call load_dataset(source) cleanly.
+                fixed_args.append("dataset.data_dir=null")
+            cr.args = fixed_args
+
+        hf_home = _ku_models.IoK8sApiCoreV1EnvVar(name="HF_HOME", value="/workspace/.hf")
+        if cr.env is None:
+            cr.env = [hf_home]
+        elif not any(e.name == "HF_HOME" for e in cr.env):
+            cr.env = list(cr.env) + [hf_home]
+
+        return cr
+
+    _ku_utils.get_trainer_cr_from_builtin_trainer = _patched_get_trainer_cr
+except Exception:
+    pass  # SDK not available or structure changed — fail gracefully
 
 # Import types at module level to avoid import deadlocks
 # when tools are called in rapid succession
@@ -79,6 +147,17 @@ try:
         TorchTuneConfig,
         TorchTuneInstructDataset,
     )
+
+    # MCP-layer subclasses that inject HF_HOME=/workspace/.hf into initializer
+    # pods via the SDK's get_optional_initializer_envs field-env-var mapping.
+    # /workspace is the shared PVC, always writable even under OpenShift restricted SCC.
+    @dataclass
+    class _HFModelInitializerWithHFHome(HuggingFaceModelInitializer):
+        hf_home: str | None = "/workspace/.hf"
+
+    @dataclass
+    class _HFDatasetInitializerWithHFHome(HuggingFaceDatasetInitializer):
+        hf_home: str | None = "/workspace/.hf"
 
     _SDK_AVAILABLE = True
 except ImportError:
@@ -300,7 +379,7 @@ def _build_initializer(
             storage_uri=model, ignore_patterns=model_ignore_patterns, **s3_kwargs
         )
     else:
-        model_init = HuggingFaceModelInitializer(
+        model_init = _HFModelInitializerWithHFHome(
             storage_uri=model, ignore_patterns=model_ignore_patterns, access_token=hf_token
         )
 
@@ -309,7 +388,7 @@ def _build_initializer(
             storage_uri=dataset, ignore_patterns=dataset_ignore_patterns, **s3_kwargs
         )
     else:
-        dataset_init = HuggingFaceDatasetInitializer(
+        dataset_init = _HFDatasetInitializerWithHFHome(
             storage_uri=dataset, ignore_patterns=dataset_ignore_patterns, access_token=hf_token
         )
 

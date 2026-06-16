@@ -61,80 +61,75 @@ sys.path.insert(0, lib_dir)
 
 This writes to `/workspace/lib` (the auto-injected writable PVC) and bypasses `/.local` entirely. Requires `KUBEFLOW_MCP_UNSAFE_SCRIPTS=true` in the server env (add to `.mcp.json` / `claude_desktop_config.json`).
 
-### Gap 2: HuggingFace downloads fail in `fine_tune()` initializer pods
+### Gap 2: HuggingFace cache writes fail in `fine_tune()` initializer and node pods
 
-The `fine_tune()` initializer pods (`model-initializer`, `dataset-initializer`) also have the volumeMount gap — `hf://` downloads via `xet_get` fail with Permission denied because `~/.cache/huggingface` is not writable.
+**Status: RESOLVED in the MCP layer** — no workaround needed.
 
-**Workaround — use `run_custom_training()` with a LoRA script instead of `fine_tune()` on OpenShift**, and set `HF_HOME=/workspace/.hf` via `env`:
+The MCP server automatically injects `HF_HOME=/workspace/.hf` into both the initializer pods (via `_HFModelInitializerWithHFHome` / `_HFDatasetInitializerWithHFHome` subclasses) and the training node pod (via `spec.trainer.env`). The `/workspace` PVC is always writable under OpenShift restricted SCC.
 
-```json
-"env": {"HF_HOME": "/workspace/.hf"}
+You do NOT need to set `HF_HOME` manually or fall back to `run_custom_training()`.
+
+### Gap 3: `alpaca_cleaned_dataset` HF URI error with local dataset files
+
+**Status: RESOLVED in the MCP layer** — no workaround needed.
+
+The Kubeflow Trainer SDK generates `dataset.data_dir=/workspace/dataset/.` for top-level HF dataset URIs. The torchtune `alpaca_cleaned_dataset` passes this as a path component inside HF URIs, causing:
+
+```
+HfUriError: Invalid HF URI 'hf://datasets/yahma/alpaca-cleaned@rev//workspace/dataset/...'
 ```
 
-### Complete working template for OpenShift LoRA fine-tuning
+The MCP server monkey-patches `get_trainer_cr_from_builtin_trainer` to:
+1. Strip the trailing `/.` from `dataset.data_dir`
+2. Append `dataset.source=<local_path>` — overrides the hardcoded HF source in `alpaca_cleaned_dataset`, making `load_dataset()` use the local PVC directory
+3. Append `dataset.data_dir=null` — clears the `data_dir` so the datasets library doesn't raise "data_dir must be relative to a dataset directory's root"
 
-```python
-# run_custom_training() script — OpenShift safe
-import subprocess, sys, os
+These patches are transparent — `fine_tune()` works as-is on OpenShift with a torchtune runtime.
 
-lib_dir = '/workspace/lib'
-os.makedirs(lib_dir, exist_ok=True)
-subprocess.run([sys.executable, '-m', 'pip', 'install',
-    '--target', lib_dir, '--quiet',
-    'transformers', 'peft', 'trl', 'datasets', 'accelerate'], check=True)
-sys.path.insert(0, lib_dir)
+---
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
-from trl import SFTConfig, SFTTrainer
-from datasets import load_dataset
+## `fine_tune()` on OpenShift — Verified Working Example
 
-os.makedirs(os.environ['HF_HOME'], exist_ok=True)
+The following call works end-to-end on OpenShift with the `torchtune-*` runtimes. Copy-paste ready:
 
-model_name = 'YOUR_MODEL'  # e.g. 'Qwen/Qwen2.5-1.5B-Instruct'
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-
-use_cuda = torch.cuda.is_available()
-model = AutoModelForCausalLM.from_pretrained(
-    model_name, torch_dtype=torch.bfloat16 if use_cuda else torch.float32,
-    trust_remote_code=True)
-
-model = get_peft_model(model, LoraConfig(
-    task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=16,
-    target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj'],
-    lora_dropout=0.05, bias='none'))
-model.print_trainable_parameters()
-
-dataset = load_dataset('YOUR_DATASET', split='train')
-
-SFTTrainer(
-    model=model,
-    args=SFTConfig(
-        output_dir='/workspace/checkpoints', num_train_epochs=1,
-        per_device_train_batch_size=4, gradient_accumulation_steps=4,
-        learning_rate=2e-4, logging_steps=50,
-        bf16=use_cuda, fp16=False, max_seq_length=512, report_to='none'),
-    train_dataset=dataset, processing_class=tokenizer,
-).train()
-print('Training complete!')
-```
-
-Call with:
 ```json
 {
-  "runtime": "torch-distributed",
-  "env": {"HF_HOME": "/workspace/.hf", "NCCL_P2P_DISABLE": "1"},
+  "runtime": "torchtune-qwen2.5-1.5b",
+  "model": "hf://Qwen/Qwen2.5-1.5B-Instruct",
+  "dataset": "hf://yahma/alpaca-cleaned",
+  "namespace": "oss-summit-demo",
+  "epochs": 1,
+  "batch_size": 4,
+  "lora_rank": 8,
+  "lora_alpha": 16,
+  "lora_attn_modules": ["q_proj", "v_proj", "output_proj"],
+  "apply_lora_to_mlp": true,
   "volumes": [
     {"name": "dot-local", "mount_path": "/.local", "empty_dir": {}},
     {"name": "dot-cache", "mount_path": "/.cache", "empty_dir": {}},
-    {"name": "tmp", "mount_path": "/tmp", "empty_dir": {}},
-    {"name": "home", "mount_path": "/home", "empty_dir": {}}
-  ]
+    {"name": "tmp-vol", "mount_path": "/tmp", "empty_dir": {}}
+  ],
+  "confirmed": true
 }
 ```
+
+**What the MCP layer handles automatically (no action needed):**
+- `HF_HOME=/workspace/.hf` on all pods (initializers + node)
+- `dataset.source` / `dataset.data_dir` OmegaConf overrides to load from local PVC
+
+**What you must always provide:**
+- `volumes` with `/.local`, `/.cache`, `/.tmp` emptyDirs — required by OpenShift restricted SCC for non-HF temp writes
+- A `torchtune-*` runtime (not `torch-distributed`) for `fine_tune()`
+- `namespace` matching your project (default: `oss-summit-demo` via `KUBEFLOW_MCP_DEFAULT_NAMESPACE`)
+
+**To cap training time** (e.g. smoke test in ~5 min):
+
+Add to the call above:
+```json
+"dataset_preprocess_config": {"max_steps_per_epoch": 10}
+```
+
+Or use `max_steps_per_epoch` if the tool schema exposes it directly.
 
 ## OpenShift Non-Root UID
 

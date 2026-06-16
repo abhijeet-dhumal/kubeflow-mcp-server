@@ -21,7 +21,9 @@ Diagnostic workflows, error-to-fix tables, and known tool limitations.
 | NCCL timeout | Multi-node communication failure | Pass `env={"NCCL_TIMEOUT": "1800"}`, try gloo backend, check network |
 | 403 Forbidden (HuggingFace) | Gated model, no token | Accept model license, pass `hf_token` |
 | Read-only file system | Platform with read-only root FS | Add emptyDir volumes (see trainer://guides/platform-fixes) |
-| Permission denied /.local | Read-only root filesystem | Add dot-local emptyDir volume |
+| Permission denied /.local or /.cache | OpenShift restricted SCC | Add dot-local / dot-cache emptyDir volumes; `HF_HOME` is auto-injected by MCP layer |
+| HfUriError: Invalid HF URI `hf://...//workspace/...` | SDK `data_dir` bug with local PVC path | Auto-fixed by MCP layer — no action needed; if still seen reload MCP server |
+| `data_dir` must be relative to a dataset directory's root | `data_dir` absolute path passed to local `load_dataset()` | Auto-fixed by MCP layer (`dataset.data_dir=null` override appended automatically) |
 | ProcessGroupNCCL...no GPUs | torchtune on CPU cluster | Use `run_custom_training()` with gloo backend instead |
 | BackOff (crash loop) | Container keeps crashing | Check `get_training_logs()` for the root error |
 | Script syntax error | Invalid Python in `run_custom_training` | Script is wrapped into function body — no top-level indentation errors, no `if __name__` guards |
