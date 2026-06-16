@@ -251,7 +251,10 @@ def load_config(config_path: Path | None = None) -> Config:
     trainer_file = file_config.get("trainer", {})
     trainer = TrainerConfig(
         default_runtime=trainer_file.get("default_runtime"),
-        default_namespace=trainer_file.get("default_namespace"),
+        default_namespace=os.getenv(
+            "KUBEFLOW_MCP_DEFAULT_NAMESPACE",
+            trainer_file.get("default_namespace"),
+        ),
         controller_namespace=os.getenv(
             "KUBEFLOW_MCP_CONTROLLER_NAMESPACE",
             trainer_file.get("controller_namespace"),
@@ -303,6 +306,17 @@ def load_config(config_path: Path | None = None) -> Config:
         logging=logging_config,
         observability=observability,
     )
+
+
+_cached_config: Config | None = None
+
+
+def get_config() -> Config:
+    """Return the cached global config, loading it on first call."""
+    global _cached_config
+    if _cached_config is None:
+        _cached_config = load_config()
+    return _cached_config
 
 
 def get_config_path() -> Path | None:

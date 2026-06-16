@@ -2,7 +2,34 @@
   "mcpServers": {
     "kubeflow": {
       "command": "uv",
-      "args": ["run", "kubeflow-mcp", "serve"]
+      "args": [
+        "--directory",
+        "/Users/abdhumal/Dev/RedHatDev/mcp-server",
+        "run",
+        "kubeflow-mcp",
+        "serve"
+      ],
+      "env": {
+        "KUBECONFIG": "/Users/abdhumal/.kube/config",
+
+        "KUBEFLOW_MCP_PERSONA": "ml-engineer",
+        "KUBEFLOW_MCP_CLIENTS": "trainer",
+        "KUBEFLOW_MCP_INSTRUCTION_TIER": "full",
+        "KUBEFLOW_MCP_DEFAULT_NAMESPACE": "oss-summit-demo",
+        "KUBEFLOW_MCP_CONTROLLER_NAMESPACE": "kubeflow",
+
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
+
+        "LOG_LEVEL": "INFO",
+        "LOG_FORMAT": "json",
+
+        "KUBEFLOW_MCP_RATE_LIMIT": "30",
+        "KUBEFLOW_MCP_RATE_CAPACITY": "60",
+        "KUBEFLOW_MCP_CB_FAILURE_THRESHOLD": "5",
+        "KUBEFLOW_MCP_CB_RECOVERY_TIMEOUT": "30",
+
+        "KUBEFLOW_MCP_UNSAFE_SCRIPTS": "true"
+      }
     }
   }
 }

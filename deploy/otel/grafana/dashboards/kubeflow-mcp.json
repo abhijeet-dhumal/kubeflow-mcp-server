@@ -1,0 +1,106 @@
+{
+  "title": "Kubeflow MCP Server",
+  "uid": "kubeflow-mcp",
+  "schemaVersion": 38,
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "5s",
+  "tags": ["kubeflow", "mcp"],
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Total Tool Calls",
+      "gridPos": { "x": 0, "y": 0, "w": 5, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [{ "expr": "sum(kubeflow_mcp_calls_total)", "legendFormat": "calls" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Success Rate",
+      "gridPos": { "x": 5, "y": 0, "w": 5, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value",
+        "thresholds": { "steps": [{"color":"red","value":0},{"color":"yellow","value":80},{"color":"green","value":95}] }
+      },
+      "fieldConfig": { "defaults": { "unit": "percent" } },
+      "targets": [{
+        "expr": "100 * sum(kubeflow_mcp_calls_total{tool_success=\"true\"}) / sum(kubeflow_mcp_calls_total)",
+        "legendFormat": "success %"
+      }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "p50 Latency",
+      "gridPos": { "x": 10, "y": 0, "w": 5, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "expr": "histogram_quantile(0.5, sum(rate(kubeflow_mcp_duration_milliseconds_bucket[5m])) by (le))",
+        "legendFormat": "p50"
+      }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "p95 Latency",
+      "gridPos": { "x": 15, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(kubeflow_mcp_duration_milliseconds_bucket[5m])) by (le))",
+        "legendFormat": "p95"
+      }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Distinct Tools",
+      "gridPos": { "x": 19, "y": 0, "w": 5, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none" },
+      "targets": [{
+        "expr": "count(count by (gen_ai_tool_name) (kubeflow_mcp_calls_total))",
+        "legendFormat": "tools"
+      }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Tool Call Rate — per tool (calls/sec)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 9 },
+      "datasource": { "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [{
+        "expr": "sum by (gen_ai_tool_name) (rate(kubeflow_mcp_calls_total[1m]))",
+        "legendFormat": "{{gen_ai_tool_name}}"
+      }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Latency Percentiles (ms)",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 9 },
+      "datasource": { "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.5,  sum(rate(kubeflow_mcp_duration_milliseconds_bucket[1m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(kubeflow_mcp_duration_milliseconds_bucket[1m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(kubeflow_mcp_duration_milliseconds_bucket[1m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 8, "type": "bargauge", "title": "Calls by Tool (total)",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "expr": "sum by (gen_ai_tool_name) (kubeflow_mcp_calls_total)",
+        "legendFormat": "{{gen_ai_tool_name}}"
+      }]
+    },
+    {
+      "id": 9, "type": "bargauge", "title": "Calls by Persona (total)",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "expr": "sum by (kubeflow_persona) (kubeflow_mcp_calls_total)",
+        "legendFormat": "{{kubeflow_persona}}"
+      }]
+    }
+  ]
+}

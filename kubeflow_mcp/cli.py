@@ -295,12 +295,14 @@ def serve(
     )
 
     show_banner = not no_banner
+    _host = os.environ.get("MCP_HOST", "127.0.0.1")
+    _port = int(os.environ.get("MCP_PORT", "8000"))
     if transport == "stdio":
         server.run(show_banner=show_banner)
     elif transport == "sse":
-        server.run(transport="sse", show_banner=show_banner)
+        server.run(transport="sse", host=_host, port=_port, show_banner=show_banner)
     else:
-        server.run(transport="streamable-http", show_banner=show_banner)
+        server.run(transport="streamable-http", host=_host, port=_port, show_banner=show_banner)
 
 
 @cli.command()

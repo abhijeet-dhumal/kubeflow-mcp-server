@@ -230,12 +230,10 @@ def _forwarded_train_args(
 def _get_client(namespace: str | None = None) -> Any:
     """Return a client targeting the given namespace.
 
-    When *namespace* is ``None`` the shared singleton is returned via the
-    module-level ``get_trainer_client`` (mockable in tests).  When a
-    namespace is explicitly provided a cached scoped client is returned.
+    When *namespace* is ``None`` the configured default namespace from
+    ``KUBEFLOW_MCP_DEFAULT_NAMESPACE`` is applied before falling back to the
+    kubeconfig default.
     """
-    if namespace is None:
-        return get_trainer_client()
     return get_trainer_client_for_namespace(namespace)
 
 

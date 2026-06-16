@@ -28,14 +28,113 @@ ALWAYS pass when `platform=openshift`. Copy-paste ready — pass directly as `vo
 "volumes": [
   {"name": "dot-local", "mount_path": "/.local", "empty_dir": {}},
   {"name": "dot-cache", "mount_path": "/.cache", "empty_dir": {}},
-  {"name": "tmp", "mount_path": "/tmp", "empty_dir": {}}
+  {"name": "tmp", "mount_path": "/tmp", "empty_dir": {}},
+  {"name": "home", "mount_path": "/home", "empty_dir": {}}
 ]
 ```
 
 **Rules**:
 - `fine_tune()`: Do NOT add workspace emptyDir — `/workspace` comes from the runtime PVC
-- `run_custom_training()`: auto-injects workspace emptyDir at `/workspace`
+- `run_custom_training()`: **MUST always pass volumes** — this triggers the workspace emptyDir auto-injection at `/workspace`, which is required for the script entrypoint to write the training script file (the entrypoint writes to the container CWD; without volumes the CWD is read-only on OpenShift)
 - `run_container_training()`: add workspace emptyDir only if your image writes to `/workspace`
+
+## run_custom_training() on OpenShift — Known Gaps
+
+### Gap 1: `packages` parameter fails (Permission denied on `/.local`)
+
+The pre-script pip install step uses `pip install --user` which writes to `/.local`. On OpenShift, the emptyDir volumes defined via the `volumes` parameter are **not injected as volumeMounts** into the training container — only the auto-injected `/workspace` emptyDir is mounted. This means `/.local` remains read-only even when a `dot-local` volume is defined.
+
+**Workaround — do NOT use `packages`. Install inside the script:**
+
+```python
+import subprocess, sys, os
+
+lib_dir = '/workspace/lib'
+os.makedirs(lib_dir, exist_ok=True)
+subprocess.run([
+    sys.executable, '-m', 'pip', 'install',
+    '--target', lib_dir, '--quiet',
+    'transformers', 'peft', 'trl', 'datasets', 'accelerate'
+], check=True)
+sys.path.insert(0, lib_dir)
+```
+
+This writes to `/workspace/lib` (the auto-injected writable PVC) and bypasses `/.local` entirely. Requires `KUBEFLOW_MCP_UNSAFE_SCRIPTS=true` in the server env (add to `.mcp.json` / `claude_desktop_config.json`).
+
+### Gap 2: HuggingFace downloads fail in `fine_tune()` initializer pods
+
+The `fine_tune()` initializer pods (`model-initializer`, `dataset-initializer`) also have the volumeMount gap — `hf://` downloads via `xet_get` fail with Permission denied because `~/.cache/huggingface` is not writable.
+
+**Workaround — use `run_custom_training()` with a LoRA script instead of `fine_tune()` on OpenShift**, and set `HF_HOME=/workspace/.hf` via `env`:
+
+```json
+"env": {"HF_HOME": "/workspace/.hf"}
+```
+
+### Complete working template for OpenShift LoRA fine-tuning
+
+```python
+# run_custom_training() script — OpenShift safe
+import subprocess, sys, os
+
+lib_dir = '/workspace/lib'
+os.makedirs(lib_dir, exist_ok=True)
+subprocess.run([sys.executable, '-m', 'pip', 'install',
+    '--target', lib_dir, '--quiet',
+    'transformers', 'peft', 'trl', 'datasets', 'accelerate'], check=True)
+sys.path.insert(0, lib_dir)
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model, TaskType
+from trl import SFTConfig, SFTTrainer
+from datasets import load_dataset
+
+os.makedirs(os.environ['HF_HOME'], exist_ok=True)
+
+model_name = 'YOUR_MODEL'  # e.g. 'Qwen/Qwen2.5-1.5B-Instruct'
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+use_cuda = torch.cuda.is_available()
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, torch_dtype=torch.bfloat16 if use_cuda else torch.float32,
+    trust_remote_code=True)
+
+model = get_peft_model(model, LoraConfig(
+    task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=16,
+    target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj'],
+    lora_dropout=0.05, bias='none'))
+model.print_trainable_parameters()
+
+dataset = load_dataset('YOUR_DATASET', split='train')
+
+SFTTrainer(
+    model=model,
+    args=SFTConfig(
+        output_dir='/workspace/checkpoints', num_train_epochs=1,
+        per_device_train_batch_size=4, gradient_accumulation_steps=4,
+        learning_rate=2e-4, logging_steps=50,
+        bf16=use_cuda, fp16=False, max_seq_length=512, report_to='none'),
+    train_dataset=dataset, processing_class=tokenizer,
+).train()
+print('Training complete!')
+```
+
+Call with:
+```json
+{
+  "runtime": "torch-distributed",
+  "env": {"HF_HOME": "/workspace/.hf", "NCCL_P2P_DISABLE": "1"},
+  "volumes": [
+    {"name": "dot-local", "mount_path": "/.local", "empty_dir": {}},
+    {"name": "dot-cache", "mount_path": "/.cache", "empty_dir": {}},
+    {"name": "tmp", "mount_path": "/tmp", "empty_dir": {}},
+    {"name": "home", "mount_path": "/home", "empty_dir": {}}
+  ]
+}
+```
 
 ## OpenShift Non-Root UID
 

@@ -19,7 +19,12 @@ from typing import Any
 
 from kubeflow_mcp.common.constants import ErrorCode
 from kubeflow_mcp.common.types import ToolError, ToolResponse, exception_details, is_k8s_not_found
-from kubeflow_mcp.common.utils import get_trainer_client_for_namespace
+from kubeflow_mcp.common.utils import (
+    K8S_TIMEOUT,
+    get_core_v1_api,
+    get_trainer_client_for_namespace,
+    get_trainer_effective_namespace,
+)
 from kubeflow_mcp.core.security import check_namespace_allowed, truncate_log_output
 
 MAX_LOG_LINES = 1000
@@ -64,6 +69,16 @@ _FAILURE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         "Check service account permissions and storage credentials.",
     ),
     (
+        re.compile(r"Permission denied.*\.local|\.local.*Permission denied", re.IGNORECASE),
+        "OPENSHIFT_PERMISSION_ERROR",
+        "OpenShift read-only filesystem: do NOT use 'packages' param. Install in-script to /workspace/lib. Read trainer://guides/platform-fixes.",
+    ),
+    (
+        re.compile(r"Permission denied.*xet_get|xet_get.*Permission denied|OSError.*I/O error.*Permission denied", re.IGNORECASE),
+        "OPENSHIFT_HF_PERMISSION_ERROR",
+        "fine_tune() initializer pods can't write HF cache on OpenShift. Use run_custom_training() with env={'HF_HOME': '/workspace/.hf'}. Read trainer://guides/platform-fixes.",
+    ),
+    (
         re.compile(r"Connection(Error|Refused|Reset)", re.IGNORECASE),
         "NETWORK_ERROR",
         "Check network policies, DNS, and endpoint reachability.",
@@ -82,6 +97,47 @@ def _extract_failure_hint(logs: str) -> dict[str, str] | None:
         if pattern.search(logs):
             return {"category": category, "suggestion": suggestion}
     return None
+
+
+def _fetch_pod_logs_fallback(name: str, namespace: str, max_lines: int = MAX_LOG_LINES) -> str:
+    """Fetch raw pod logs directly via CoreV1Api when the Trainer SDK returns nothing.
+
+    Tries current logs first; falls back to previous container logs for
+    crash-looped or recently terminated pods. Returns concatenated output
+    from all pods belonging to the TrainJob.
+    """
+    try:
+        v1 = get_core_v1_api()
+        label_selector = f"training.kubeflow.org/trainjob-name={name}"
+        pods = v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=label_selector,
+            _request_timeout=K8S_TIMEOUT,
+        )
+        if not pods.items:
+            return ""
+
+        parts: list[str] = []
+        for pod in pods.items:
+            pod_name = pod.metadata.name
+            for previous in (False, True):
+                try:
+                    raw = v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=namespace,
+                        tail_lines=max_lines,
+                        previous=previous,
+                        _request_timeout=K8S_TIMEOUT,
+                    )
+                    if raw and raw.strip():
+                        label = f"[{pod_name}{'  (previous)' if previous else ''}]"
+                        parts.append(f"{label}\n{raw.strip()}")
+                        break
+                except Exception:
+                    continue
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
 
 
 def get_training_logs(
@@ -130,6 +186,13 @@ def get_training_logs(
             log_lines = log_lines[-MAX_LOG_LINES:]
 
         logs = "\n".join(log_lines)
+
+        # SDK returned nothing — fall back to direct pod log fetch (handles
+        # crash-looping pods and pods where labels don't match the SDK query).
+        if not logs.strip():
+            ns = get_trainer_effective_namespace(namespace)
+            logs = _fetch_pod_logs_fallback(name, ns)
+
         sanitized = truncate_log_output(logs)
 
         data: dict[str, Any] = {

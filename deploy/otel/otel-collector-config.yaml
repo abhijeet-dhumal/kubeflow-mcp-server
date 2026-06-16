@@ -12,9 +12,24 @@ processors:
     check_interval: 1s
     limit_mib: 256
 
+connectors:
+  # Converts spans to Prometheus metrics: calls/sec, latency histograms, error rate
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [1ms, 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s]
+    dimensions:
+      - name: gen_ai.tool.name
+      - name: kubeflow.persona
+      - name: tool.success
+    metrics_flush_interval: 5s
+    namespace: kubeflow_mcp
+
 exporters:
-  otlphttp/jaeger:
-    endpoint: http://jaeger:4318  # Jaeger OTLP HTTP (enabled via COLLECTOR_OTLP_ENABLED=true)
+  otlp/jaeger:
+    endpoint: jaeger:4317  # DNS resolved via compose service name — no static IPs
+    tls:
+      insecure: true
 
   prometheus:
     endpoint: 0.0.0.0:8889       # scraped by Prometheus
@@ -26,15 +41,20 @@ exporters:
   #     insecure: true
 
   debug:
-    verbosity: normal
+    verbosity: detailed
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlphttp/jaeger, debug]
-    metrics:
+      exporters: [otlp/jaeger, debug]
+      # spanmetrics connector reads from this pipeline and emits metrics
+    traces/spanmetrics:
       receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [spanmetrics]
+    metrics:
+      receivers: [otlp, spanmetrics]
       processors: [memory_limiter, batch]
       exporters: [prometheus, debug]

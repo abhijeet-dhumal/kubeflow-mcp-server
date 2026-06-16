@@ -99,12 +99,21 @@ def get_apiextensions_api() -> "k8s_client.ApiextensionsV1Api":
 
 
 def get_trainer_effective_namespace(namespace: str | None = None) -> str:
-    """Namespace for TrainJob operations: explicit arg, then SDK backend, else ``default``.
+    """Namespace for TrainJob operations.
 
-    Aligns direct CustomObjects calls with :class:`TrainerClient` (Kubernetes backend).
+    Resolution order:
+    1. Explicit ``namespace`` argument
+    2. ``KUBEFLOW_MCP_DEFAULT_NAMESPACE`` env var / config file
+    3. TrainerClient SDK backend namespace
+    4. ``"default"``
     """
     if namespace:
         return namespace
+    from kubeflow_mcp.core.config import get_config
+
+    cfg_ns = get_config().trainer.default_namespace
+    if cfg_ns:
+        return cfg_ns
     client = get_trainer_client()
     backend = client.backend
     ns = getattr(backend, "namespace", None)
@@ -133,10 +142,17 @@ _NS_CLIENT_CACHE_MAX = 64
 def get_trainer_client_for_namespace(namespace: str | None = None) -> Any:
     """Return a TrainerClient targeting the given namespace.
 
-    When *namespace* is ``None`` the shared singleton (default kubeconfig
-    namespace) is returned.  When a namespace is explicitly provided a
-    cached ``TrainerClient`` scoped to that namespace is returned.
+    Resolution order:
+    1. Explicit ``namespace`` argument
+    2. ``KUBEFLOW_MCP_DEFAULT_NAMESPACE`` env var / config file
+    3. kubeconfig default namespace
     """
+    if namespace is None:
+        from kubeflow_mcp.core.config import get_config
+
+        cfg_ns = get_config().trainer.default_namespace
+        if cfg_ns:
+            namespace = cfg_ns
     if namespace is None:
         return get_trainer_client()
     with _ns_client_lock:
