@@ -78,6 +78,16 @@ def setup_tracing(
         _setup_done = True
         return False
 
+    resolved = resolved.strip()
+    if not resolved:
+        _setup_done = True
+        return False
+
+    if not (resolved.startswith("http://") or resolved.startswith("https://")):
+        raise ValueError(
+            f"Invalid OpenTelemetry endpoint '{resolved}': must start with http:// or https://"
+        )
+
     try:
         from opentelemetry import trace as _trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -112,18 +122,21 @@ def setup_tracing(
     return True
 
 
-def get_tracer() -> Any:
+def get_tracer(name: str = _TRACER_NAME) -> Any:
     """Return the active server tracer, or a no-op stub when OTel is off.
 
     Call this ONCE per tool registration and cache the result to avoid
     repeated tracer lookups on each tool invocation.
+
+    Args:
+        name: Instrumentation scope name (ignored when tracing is pre-configured).
     """
     if _tracer is not None:
         return _tracer
     try:
         from opentelemetry import trace as _trace
 
-        return _trace.get_tracer(_TRACER_NAME)
+        return _trace.get_tracer(name)
     except ImportError:
         return _NoopTracer()
 

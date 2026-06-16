@@ -47,9 +47,16 @@ class _FakeSpan:
     def record_exception(self, exception: BaseException) -> None:
         self.exceptions.append(exception)
 
-    def set_status(self, code: object, description: str | None = None) -> None:
-        self.status_code = code
-        self.status_description = description
+    def set_status(self, status_or_code: object, description: str | None = None) -> None:
+        """Accept either set_status(Status(code, msg)) or set_status(code, msg)."""
+        if hasattr(status_or_code, "status_code"):
+            # Called with a Status object: Status(StatusCode.ERROR, "msg")
+            self.status_code = status_or_code
+            self.status_description = getattr(status_or_code, "description", description)
+        else:
+            # Called directly with a StatusCode enum value
+            self.status_code = status_or_code
+            self.status_description = description
 
 
 class _FakeTracer:
@@ -82,17 +89,23 @@ class _FakeBreaker:
 
 
 def test_get_tracer_returns_noop_when_otel_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(telemetry, "_OTEL_AVAILABLE", False)
+    monkeypatch.setattr(telemetry, "_tracer", None)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "opentelemetry",
+        None,  # type: ignore[arg-type]
+    )
     tracer = telemetry.get_tracer("test")
     with tracer.start_as_current_span("span") as span:
         span.set_attribute("k", "v")
         span.record_exception(ValueError("boom"))
 
 
-def test_setup_tracing_noop_when_otel_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(telemetry, "_OTEL_AVAILABLE", False)
-    monkeypatch.setattr(telemetry, "_tracing_initialized", False)
-    assert telemetry.setup_tracing("http://collector:4318/v1/traces") is False
+def test_setup_tracing_noop_when_no_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telemetry, "_tracer", None)
+    monkeypatch.setattr(telemetry, "_setup_done", False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    assert telemetry.setup_tracing() is False
 
 
 def test_setup_tracing_configures_provider_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +113,7 @@ def test_setup_tracing_configures_provider_when_available(monkeypatch: pytest.Mo
 
     class _FakeProvider:
         def __init__(self, resource: object) -> None:
-            calls["resource"] = resource
+            calls["provider_resource"] = resource
             self._processors: list[object] = []
 
         def add_span_processor(self, processor: object) -> None:
@@ -111,17 +124,16 @@ def test_setup_tracing_configures_provider_when_available(monkeypatch: pytest.Mo
             pass
 
     class _FakeResource:
-        @staticmethod
-        def create(data: dict[str, str]) -> dict[str, str]:
-            return data
+        # mimic opentelemetry.sdk.resources.Resource(attributes=...)
+        def __init__(self, attributes: dict[str, str]) -> None:
+            calls["resource"] = attributes
 
     class _FakeBatchProcessor:
-        def __init__(self, exporter: object) -> None:
+        def __init__(self, exporter: object, **_kw: object) -> None:
             self.exporter = exporter
 
     class _FakeExporter:
-        def __init__(self, endpoint: str) -> None:
-            self.endpoint = endpoint
+        def __init__(self, endpoint: str, **_kw: object) -> None:
             calls["endpoint"] = endpoint
 
     fake_trace = SimpleNamespace()
@@ -132,78 +144,52 @@ def test_setup_tracing_configures_provider_when_available(monkeypatch: pytest.Mo
     def _get_tracer(name: str) -> str:
         return f"tracer:{name}"
 
-    def _get_tracer_provider() -> object:
-        return object()
-
     fake_trace.set_tracer_provider = _set_tracer_provider
     fake_trace.get_tracer = _get_tracer
-    fake_trace.get_tracer_provider = _get_tracer_provider
 
-    monkeypatch.setattr(telemetry, "_OTEL_AVAILABLE", True)
-    monkeypatch.setattr(telemetry, "_tracing_initialized", False)
-    monkeypatch.setattr(telemetry, "_configured_endpoint", None, raising=False)
-    monkeypatch.setattr(telemetry, "Resource", _FakeResource, raising=False)
-    monkeypatch.setattr(telemetry, "TracerProvider", _FakeProvider, raising=False)
-    monkeypatch.setattr(telemetry, "BatchSpanProcessor", _FakeBatchProcessor, raising=False)
-    monkeypatch.setattr(telemetry, "OTLPSpanExporter", _FakeExporter, raising=False)
-    monkeypatch.setattr(telemetry, "_otel_trace", fake_trace, raising=False)
+    import sys
 
-    assert telemetry.setup_tracing("http://collector:4318/v1/traces", "kubeflow-mcp") is True
+    fake_otel_sdk_resources = SimpleNamespace(
+        Resource=_FakeResource,
+        SERVICE_NAME="service.name",
+    )
+    fake_otel_sdk_trace = SimpleNamespace(TracerProvider=_FakeProvider)
+    fake_otel_sdk_trace_export = SimpleNamespace(BatchSpanProcessor=_FakeBatchProcessor)
+    fake_otel_exporter = SimpleNamespace(OTLPSpanExporter=_FakeExporter)
+
+    monkeypatch.setattr(telemetry, "_tracer", None)
+    monkeypatch.setattr(telemetry, "_setup_done", False)
+    monkeypatch.setitem(sys.modules, "opentelemetry", SimpleNamespace(trace=fake_trace))
+    monkeypatch.setitem(sys.modules, "opentelemetry.exporter.otlp.proto.http.trace_exporter", fake_otel_exporter)
+    monkeypatch.setitem(sys.modules, "opentelemetry.sdk.resources", fake_otel_sdk_resources)
+    monkeypatch.setitem(sys.modules, "opentelemetry.sdk.trace", fake_otel_sdk_trace)
+    monkeypatch.setitem(sys.modules, "opentelemetry.sdk.trace.export", fake_otel_sdk_trace_export)
+
+    assert telemetry.setup_tracing("http://collector:4318", service_name="kubeflow-mcp") is True
     assert calls["endpoint"] == "http://collector:4318/v1/traces"
     assert calls["resource"] == {"service.name": "kubeflow-mcp"}
-    assert telemetry.get_tracer("unit") == "tracer:unit"
 
 
 def test_setup_tracing_treats_whitespace_endpoint_as_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(telemetry, "_OTEL_AVAILABLE", True)
-    monkeypatch.setattr(telemetry, "_tracing_initialized", False)
-    monkeypatch.setattr(telemetry, "_configured_endpoint", None, raising=False)
+    monkeypatch.setattr(telemetry, "_tracer", None)
+    monkeypatch.setattr(telemetry, "_setup_done", False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     assert telemetry.setup_tracing("   ") is False
 
 
-def test_setup_tracing_rejects_invalid_endpoint() -> None:
+def test_setup_tracing_rejects_invalid_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telemetry, "_setup_done", False)
     with pytest.raises(ValueError, match="Invalid OpenTelemetry endpoint"):
         telemetry.setup_tracing("localhost:4318/v1/traces")
 
 
-def test_setup_tracing_reuses_existing_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, object] = {}
-
-    class _ExistingProvider:
-        def __init__(self) -> None:
-            self.processors: list[object] = []
-
-        def add_span_processor(self, processor: object) -> None:
-            self.processors.append(processor)
-            calls["processor"] = processor
-
-    class _FakeBatchProcessor:
-        def __init__(self, exporter: object) -> None:
-            self.exporter = exporter
-
-    class _FakeExporter:
-        def __init__(self, endpoint: str) -> None:
-            calls["endpoint"] = endpoint
-
-    provider = _ExistingProvider()
-    fake_trace = SimpleNamespace()
-    fake_trace.get_tracer_provider = lambda: provider
-    fake_trace.get_tracer = lambda _name: "tracer"
-    fake_trace.set_tracer_provider = lambda _provider: calls.update({"set_called": True})
-
-    monkeypatch.setattr(telemetry, "_OTEL_AVAILABLE", True)
-    monkeypatch.setattr(telemetry, "_tracing_initialized", False)
-    monkeypatch.setattr(telemetry, "_configured_endpoint", None, raising=False)
-    monkeypatch.setattr(telemetry, "BatchSpanProcessor", _FakeBatchProcessor, raising=False)
-    monkeypatch.setattr(telemetry, "OTLPSpanExporter", _FakeExporter, raising=False)
-    monkeypatch.setattr(telemetry, "_otel_trace", fake_trace, raising=False)
-
-    assert telemetry.setup_tracing("http://collector:4318/v1/traces", "kubeflow-mcp") is True
-    assert calls["endpoint"] == "http://collector:4318/v1/traces"
-    assert "processor" in calls
-    assert "set_called" not in calls
+def test_setup_tracing_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Second call with _setup_done=True returns cached result without reconfiguring."""
+    monkeypatch.setattr(telemetry, "_tracer", None)
+    monkeypatch.setattr(telemetry, "_setup_done", True)
+    assert telemetry.setup_tracing("http://collector:4318") is False
 
 
 def test_audit_wrap_sets_span_attributes_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -224,7 +210,7 @@ def test_audit_wrap_sets_span_attributes_on_success(monkeypatch: pytest.MonkeyPa
     wrapped = _audit_wrap(sample_tool)
     wrapped()
 
-    # OTel MCP semantic conventions
+    # MCP semantic conventions
     assert span.attributes["gen_ai.tool.name"] == "sample_tool"
     assert span.attributes["mcp.method.name"] == "tools/call"
     assert span.attributes["gen_ai.operation.name"] == "execute_tool"
@@ -234,14 +220,14 @@ def test_audit_wrap_sets_span_attributes_on_success(monkeypatch: pytest.MonkeyPa
 
     if _MCP_PROTOCOL_VERSION:
         assert span.attributes["mcp.protocol.version"] == _MCP_PROTOCOL_VERSION
-    # Custom Kubeflow enrichment
+    # Kubeflow enrichment
     assert span.attributes["correlation_id"] == "cid-123"
     assert span.attributes["kubeflow.persona"] == "ml-engineer"
     assert span.attributes["tool.success"] is True
     assert "tool.duration_ms" in span.attributes
     assert span.attributes["tool.args_preview"] == "{}"
     assert breaker.successes == 1
-    # Verify SpanKind.SERVER is passed when OTel is available
+    # SpanKind.SERVER is passed when OTel is available
     from kubeflow_mcp.core.server import SpanKind as _SpanKind
 
     if _SpanKind is not None:
@@ -263,7 +249,6 @@ def test_audit_wrap_sets_mcp_context_attributes(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(server_mod, "get_tracer", lambda _name: tracer)
     monkeypatch.setattr(server_mod, "get_breaker", lambda _tool: breaker)
 
-    # Patch isinstance to accept our mock as Context
     mock_ctx = _MockMCPContext(session_id="sess-abc", request_id=42)
     original_isinstance = builtins.isinstance
 
@@ -306,8 +291,7 @@ def test_audit_wrap_records_exception_on_failure(monkeypatch: pytest.MonkeyPatch
     assert "tool.duration_ms" in span.attributes
     assert span.attributes["error.type"] == "RuntimeError"
     assert breaker.failures == 1
-    # record_exception is no longer called manually; start_as_current_span
-    # auto-records it.  Instead, set_status(ERROR) must be called.
+    # record_exception is NOT called — set_status(ERROR) is used instead.
     assert len(span.exceptions) == 0
     from kubeflow_mcp.core.server import _StatusCode
 

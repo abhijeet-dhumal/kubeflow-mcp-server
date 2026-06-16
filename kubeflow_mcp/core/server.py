@@ -120,13 +120,12 @@ def _get_server_tracer() -> Any:
 def _audit_wrap(tool_func):
     """Wrap a tool with rate limiting, circuit breaking, OTel spans, and audit logging.
 
-    OTel span attributes set per call:
-      tool.name, tool.args_preview, tool.success, tool.duration_ms,
-      user.id, mcp.session_id, correlation_id, kubeflow.persona.
-    Identity attributes (user.id / mcp.session_id) are read from
-    AuditIdentityMiddleware's ContextVars, giving each span full lineage.
+    Span attributes follow MCP semantic conventions (gen_ai.tool.name,
+    mcp.method.name, gen_ai.operation.name, mcp.session.id, mcp.request.id,
+    mcp.protocol.version) plus Kubeflow enrichment (kubeflow.persona,
+    correlation_id, tool.success, tool.duration_ms, tool.args_preview).
     """
-    tracer = _get_server_tracer()
+    _tracer = get_tracer(tool_func.__name__)
 
     @functools.wraps(tool_func)
     def wrapper(**kwargs):
@@ -135,21 +134,12 @@ def _audit_wrap(tool_func):
         tool_name = tool_func.__name__
         user_id = _AUDIT_USER_ID.get()
         session_id = _AUDIT_SESSION_ID.get()
+        persona = get_effective_persona()
 
-        try:
-            from opentelemetry.trace import SpanKind, StatusCode
+        span_kwargs: dict[str, Any] = {"name": f"tools/call {tool_name}"}
+        if SpanKind is not None:
+            span_kwargs["kind"] = SpanKind.SERVER
 
-            _StatusCode = StatusCode
-            _SpanKind = SpanKind
-        except ImportError:
-            _StatusCode = None
-            _SpanKind = None
-
-        span_kwargs: dict[str, Any] = {"name": f"tool.{tool_name}"}
-        if _SpanKind is not None:
-            span_kwargs["kind"] = _SpanKind.SERVER
-
-        _tracer = tracer or _get_server_tracer()
         span_cm = (
             _tracer.start_as_current_span(**span_kwargs)
             if _tracer is not None
@@ -157,17 +147,31 @@ def _audit_wrap(tool_func):
         )
 
         with span_cm as span:
-            # Set identity + preview attrs before tool executes.
             masked = mask_sensitive_data(kwargs) if kwargs else {}
-            import json as _json
+            args_preview = json.dumps(masked, default=str)[:300]
 
-            args_preview = _json.dumps(masked, default=str)[:300]
-            _set_span_attrs(span, {
-                "tool.name": tool_name,
-                "tool.args_preview": args_preview,
+            base_attrs: dict[str, Any] = {
+                "gen_ai.tool.name": tool_name,
+                "mcp.method.name": "tools/call",
+                "gen_ai.operation.name": "execute_tool",
+                "kubeflow.persona": persona,
                 "user.id": user_id,
-                "mcp.session_id": session_id,
-            })
+                "tool.args_preview": args_preview,
+            }
+            if _MCP_PROTOCOL_VERSION:
+                base_attrs["mcp.protocol.version"] = _MCP_PROTOCOL_VERSION
+
+            # Extract MCP session/request IDs from FastMCP Context if present.
+            ctx = kwargs.get("ctx")
+            if ctx is not None and isinstance(ctx, Context):
+                if getattr(ctx, "session_id", None) is not None:
+                    base_attrs["mcp.session.id"] = str(ctx.session_id)
+                if getattr(ctx, "request_id", None) is not None:
+                    base_attrs["mcp.request.id"] = str(ctx.request_id)
+            elif session_id:
+                base_attrs["mcp.session.id"] = str(session_id)
+
+            _set_span_attrs(span, base_attrs)
 
             if _rate_limiter is not None and not _rate_limiter.acquire():
                 logger.warning("rate_limited", extra={"tool": tool_name})
@@ -180,7 +184,12 @@ def _audit_wrap(tool_func):
             breaker = get_breaker(tool_name)
             if not breaker.can_execute():
                 logger.warning("circuit_open", extra={"tool": tool_name})
-                _set_span_attrs(span, {"tool.success": False, "circuit_open": True})
+                duration_ms = 0
+                _set_span_attrs(span, {
+                    "tool.success": False,
+                    "tool.duration_ms": duration_ms,
+                    "circuit_open": True,
+                })
                 return {
                     "error": f"Circuit breaker open for '{tool_name}' — K8s API may be degraded. Retries automatically after recovery timeout.",
                     "error_code": ErrorCode.CIRCUIT_OPEN,
@@ -224,17 +233,16 @@ def _audit_wrap(tool_func):
             except Exception as exc:
                 duration_ms = int((time.monotonic() - start) * 1000)
                 breaker.record_failure()
-                if span is not None:
-                    try:
-                        span.record_exception(exc)
-                        if _StatusCode is not None:
-                            span.set_status(_StatusCode.ERROR, str(exc))
-                    except Exception:
-                        pass
                 _set_span_attrs(span, {
                     "tool.success": False,
                     "tool.duration_ms": duration_ms,
+                    "error.type": type(exc).__name__,
                 })
+                if _StatusCode is not None and _Status is not None:
+                    try:
+                        span.set_status(_Status(_StatusCode.ERROR, str(exc)))
+                    except Exception:
+                        pass
                 logger.error(
                     "tool_call_failed",
                     extra={
