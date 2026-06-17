@@ -297,9 +297,11 @@ INSTRUCTION_SECTIONS: dict[str, dict[str, str]] = {
 PLANNING (always do first):
 - pre_flight(model="<model>") -> One call: compatibility + cluster + estimate + runtimes. DO NOT call list_runtimes() afterward — runtimes are already in the pre_flight response.
 - pre_flight model must be a HuggingFace ID (e.g. google/gemma-2-2b), not an Ollama chat tag (e.g. gemma4:e4b)
+- For custom training jobs (CNN, PyTorch scripts, etc.) where no HF model is needed, call pre_flight(model="") — it still returns platform, cluster resources, and available runtimes.
 - If blockers returned, STOP and inform user
 - If gpu_total=0 -> fine_tune() will NOT work (torchtune needs GPUs). Use run_custom_training() with gloo backend instead
 - Individual tools (check_compatibility, get_cluster_resources, estimate_resources) available for targeted re-checks
+- In progressive/semantic mode ALL Kubeflow tools must be called via execute_tool(tool_name="<name>", arguments={"key": "value"}). Do NOT call them directly — only list_tools, describe_tools, and execute_tool are available as direct tools.
 DISCOVERY (after pre_flight, only if runtime details are needed):
 - list_runtimes() -> skip if pre_flight was already called (runtimes already returned)
 - get_runtime(name) -> inspect runtime spec, container images, default config
@@ -328,6 +330,8 @@ TOOL SELECTION:
 
 TRAINING RULES:
 - ALWAYS preview before submitting (confirmed=False first), then show preview to user and wait for approval
+- After showing a confirmed=False preview, STOP. Do NOT call the same tool again with confirmed=True in the same turn. Wait for the user to explicitly say "yes", "submit", "confirm", or similar before calling with confirmed=True.
+- For run_custom_training(), YOU must write the Python script — do NOT ask the user to provide code. Generate it based on the user's description (model, dataset, epochs, etc.) using standard PyTorch/HuggingFace patterns.
 - fine_tune() does NOT support env parameter — if env vars are needed, use run_custom_training() instead
 - run_custom_training() and run_container_training() support env as a direct parameter: env={"KEY": "VALUE"}
 - URI formats: fine_tune() requires hf:// prefix for model/dataset; estimate_resources() uses bare model IDs
@@ -338,6 +342,7 @@ TRAINING RULES:
 
 PLATFORM:
 - If pre_flight() returns platform=openshift, ALWAYS pass emptyDir volumes for /.local, /.cache, /tmp — without these, jobs fail on read-only filesystem. Read trainer://guides/platform-fixes for copy-paste JSON
+- On OpenShift, NEVER use the packages= parameter in run_custom_training() — it fails with permission errors. Install packages inside the script using pip with --target=/workspace/lib and add /workspace/lib to sys.path.
 - Gated HuggingFace models require hf_token parameter
 - Training jobs consume GPU resources — be conservative with num_nodes
 - Use get_training_events() to debug stuck/failed jobs. Read trainer://guides/troubleshooting for error-to-fix tables""",

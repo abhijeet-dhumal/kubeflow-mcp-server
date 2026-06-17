@@ -35,12 +35,32 @@ def set_confirm_handler(handler: ConfirmHandler | None) -> None:
     _handler = handler
 
 
+_LONG_VALUE_FIELDS = frozenset({"script", "command", "code"})
+_PREVIEW_EXCERPT_LINES = 12  # lines of a script shown inline before "see <path>"
+
+
+def _dump_long_value(field: str, value: str) -> str:
+    """Write a long field value to /tmp; return the path."""
+    import tempfile
+    suffix = ".py" if field == "script" else ".txt"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix=f"kf-mcp-preview-{field}-",
+        suffix=suffix,
+        dir="/tmp",
+        delete=False,
+    ) as f:
+        f.write(value)
+        return f.name
+
+
 def make_console_confirm_handler(console: Any) -> ConfirmHandler:
     """Rich y/n prompt before mutating tools with confirmed=False."""
 
     def ask(tool_name: str, args: dict[str, Any]) -> bool:
         from rich.panel import Panel
         from rich.prompt import Confirm
+        from rich.syntax import Syntax
         from rich.table import Table
 
         # Only show non-null, non-confirmed fields so the panel is concise
@@ -49,11 +69,19 @@ def make_console_confirm_handler(console: Any) -> ConfirmHandler:
         t = Table.grid(padding=(0, 2))
         t.add_column(style="dim", min_width=20)
         t.add_column(style="bright_yellow")
+
+        long_fields: list[tuple[str, str, str]] = []  # (field, value, tmp_path)
+
         for k, v in preview.items():
-            val = json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
-            if len(val) > 120:
-                val = val[:120] + "…"
-            t.add_row(k, val)
+            raw = json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
+            if k in _LONG_VALUE_FIELDS and "\n" in raw and len(raw) > 200:
+                tmp_path = _dump_long_value(k, raw)
+                line_count = raw.count("\n") + 1
+                t.add_row(k, f"[dim]{line_count} lines (see path below)[/dim]")
+                long_fields.append((k, raw, tmp_path))
+            else:
+                val = raw if len(raw) <= 120 else raw[:120] + "…"
+                t.add_row(k, val)
 
         console.print()
         console.print(
@@ -64,6 +92,22 @@ def make_console_confirm_handler(console: Any) -> ConfirmHandler:
                 padding=(0, 1),
             )
         )
+
+        for field, value, tmp_path in long_fields:
+            lines = value.splitlines()
+            excerpt = "\n".join(lines[:_PREVIEW_EXCERPT_LINES])
+            if len(lines) > _PREVIEW_EXCERPT_LINES:
+                excerpt += f"\n# … ({len(lines) - _PREVIEW_EXCERPT_LINES} more lines)"
+            console.print(
+                Panel(
+                    Syntax(excerpt, "python", theme="monokai", line_numbers=True),
+                    title=f"[dim]{field}[/dim]",
+                    border_style="dim",
+                    padding=(0, 1),
+                )
+            )
+            console.print(f"[dim]  Full {field}: [bold]{tmp_path}[/bold][/dim]")
+
         return Confirm.ask("  Submit?", default=False)
 
     return ask

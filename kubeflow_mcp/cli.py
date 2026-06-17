@@ -426,6 +426,12 @@ def _provider_entry_point_map() -> dict[str, Any]:
         "Run deploy/otel/docker-compose.yml to start a local collector."
     ),
 )
+@click.option(
+    "--persona",
+    default="platform-admin",
+    type=click.Choice(["readonly", "data-scientist", "ml-engineer", "platform-admin"]),
+    help="Initial persona / role for tool access control (default: platform-admin)",
+)
 def agent(
     provider: str,
     model: str | None,
@@ -438,6 +444,7 @@ def agent(
     mlflow_uri: str | None,
     framework: str,
     otel_endpoint: str | None,
+    persona: str,
 ) -> None:
     """Run an interactive AI agent backed by a registered provider."""
     _ensure_agent_deps(
@@ -482,6 +489,7 @@ def agent(
         "mlflow_uri": mlflow_uri,
         "framework": framework,
         "otel_endpoint": otel_endpoint,
+        "persona": persona,
     }
     if base_url is not None:
         kwargs["base_url"] = base_url

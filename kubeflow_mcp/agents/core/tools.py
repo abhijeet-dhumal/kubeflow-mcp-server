@@ -29,6 +29,7 @@ from collections.abc import Callable
 from typing import Any
 
 VALID_MODES: frozenset[str] = frozenset({"full", "progressive", "semantic"})
+VALID_PERSONAS: tuple[str, ...] = ("readonly", "data-scientist", "ml-engineer", "platform-admin")
 
 
 # ── In-process tool loading ───────────────────────────────────────────────────
@@ -88,6 +89,27 @@ def load_tools(tool_mode: str) -> tuple[list[Callable[..., Any]], dict[str, str]
     if tool_mode in ("progressive", "semantic"):
         return _get_meta_mode_tools(tool_mode)
     raise ValueError(f"Invalid tool_mode {tool_mode!r}. Choose: {', '.join(sorted(VALID_MODES))}")
+
+
+def load_tools_for_persona(
+    tool_mode: str,
+    persona: str,
+) -> tuple[list[Callable[..., Any]], dict[str, str]]:
+    """Load tools filtered by persona access level.
+
+    ``platform-admin`` bypasses filtering (unrestricted).  All other personas
+    receive only the tools their role permits, resolved via inheritance.
+    """
+    from kubeflow_mcp.core.policy import get_allowed_tools, set_effective_persona
+
+    set_effective_persona(persona)
+    fns, descs = load_tools(tool_mode)
+    allowed = get_allowed_tools(persona)
+    if allowed is None:
+        return fns, descs
+    filtered_fns = [fn for fn in fns if fn.__name__ in allowed]
+    filtered_descs = {k: v for k, v in descs.items() if k in allowed}
+    return filtered_fns, filtered_descs
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────

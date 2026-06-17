@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 REPL_EXIT_COMMANDS = frozenset({"exit", "quit", "q"})
 VALID_MODES = ("full", "progressive", "semantic")
+VALID_PERSONAS = ("readonly", "data-scientist", "ml-engineer", "platform-admin")
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class CommonReplHandlers:
     on_unknown: Callable[[str], None]
     on_mode: Callable[[str], None] | None = None
     on_help: Callable[[], None] | None = None
+    on_persona: Callable[[str], None] | None = None
 
 
 def handle_common_repl_command(line: str, handlers: CommonReplHandlers) -> bool:
@@ -68,6 +70,13 @@ def handle_common_repl_command(line: str, handlers: CommonReplHandlers) -> bool:
         arg = line[len("/mode") :].strip()
         if handlers.on_mode is not None:
             handlers.on_mode(arg)
+        else:
+            handlers.on_unknown(line)
+        return True
+    if line.startswith("/persona"):
+        arg = line[len("/persona") :].strip()
+        if handlers.on_persona is not None:
+            handlers.on_persona(arg)
         else:
             handlers.on_unknown(line)
         return True

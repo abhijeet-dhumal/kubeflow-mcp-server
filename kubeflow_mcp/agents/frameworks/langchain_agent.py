@@ -32,7 +32,7 @@ from kubeflow_mcp.agents.core.tool_dispatch import (
     normalize_execute_tool_args,
 )
 from kubeflow_mcp.agents.core.confirm import wrap_with_confirm
-from kubeflow_mcp.agents.core.tools import get_system_prompt, load_tools
+from kubeflow_mcp.agents.core.tools import get_system_prompt, load_tools, load_tools_for_persona
 from kubeflow_mcp.agents.frameworks._observability import is_local_ollama_model, setup_langsmith
 from kubeflow_mcp.agents.frameworks._thinking import (
     apply_thinking_to_chat_litellm,
@@ -545,7 +545,8 @@ def _build_executor(
                 _rc = get_console()
                 # Mutating tools (confirmed param) may show a Rich Confirm.ask() dialog.
                 # Running that inside console.status() deadlocks stdin — skip the spinner.
-                if _has_confirmed:
+                # execute_tool is also excluded: it dispatches to confirmed tools internally.
+                if _has_confirmed or fn.__name__ == "execute_tool":
                     result = invoke_with_mlflow_span(fn, kwargs, framework="langchain")
                 else:
                     with _rc.status(f"[dim]running {fn.__name__}…[/dim]", spinner="dots"):
@@ -576,7 +577,7 @@ def _build_executor(
             for fn in wrapped
         ]
         tool_calling_system = (
-            system_prompt
+            system_prompt.replace("{", "{{").replace("}", "}}")
             + "\n\nFor greetings, small talk, or general questions that do not require "
             "live Kubernetes or training data, reply directly WITHOUT calling any tool."
         )
@@ -1057,6 +1058,7 @@ def _import_langchain_session(memory, tracker: _UsageTracker, path: str) -> int:
 def run_langchain_chat(
     model: str,
     tool_mode: str = "full",
+    persona: str = "platform-admin",
     base_url: str | None = None,
     langfuse: bool = False,
     thinking: bool = True,
@@ -1102,9 +1104,10 @@ def run_langchain_chat(
     thinking_handler = _make_thinking_display_handler(console, thinking_holder)
     run_config = _build_run_config(tracker, model, tool_mode, thinking_handler)
 
-    # Mutable holder so /mode can swap tool sets without rebuilding the closure.
+    # Mutable holder so /mode and /persona can swap tool sets without rebuilding the closure.
     tool_holder: dict[str, Any] = {}
-    _initial_fns, _initial_descs = load_tools(tool_mode)
+    persona_holder: dict[str, str] = {"persona": persona}
+    _initial_fns, _initial_descs = load_tools_for_persona(tool_mode, persona)
     tool_holder.update({"fns": _initial_fns, "descs": _initial_descs, "mode": tool_mode})
 
     # Compact tier for local Ollama — fewer tokens → faster inference.
@@ -1144,8 +1147,14 @@ def run_langchain_chat(
         executor_holder["agent_mode"] = agent_mode
 
     def change_mode(new_mode: str) -> None:
-        new_fns, new_descs = load_tools(new_mode)
+        new_fns, new_descs = load_tools_for_persona(new_mode, persona_holder["persona"])
         tool_holder.update({"fns": new_fns, "descs": new_descs, "mode": new_mode})
+        rebuild()
+
+    def change_persona(new_persona: str) -> None:
+        persona_holder["persona"] = new_persona
+        new_fns, new_descs = load_tools_for_persona(tool_holder["mode"], new_persona)
+        tool_holder.update({"fns": new_fns, "descs": new_descs})
         rebuild()
 
     class _NormalizedMemory(ConversationBufferMemory):
@@ -1211,9 +1220,10 @@ def run_langchain_chat(
             ("white", f"Agent   : {agent_mode}"),
             ("white", f"Backend : {backend_label}"),
             ("white", f"Mode    : {tool_mode}  ({len(lc_tools)} tools)"),
+            ("white", f"Persona : {persona}"),
             *([("dim", f"Tracing : {tracing}")] if tracing else []),
             ("dim", ""),
-            ("dim", "Commands: /help  /tools  /mode <mode>  /think  /export  /import <file>  /clear  exit"),
+            ("dim", "Commands: /help  /tools  /mode <mode>  /persona <role>  /think  /export  /import <file>  /clear  exit"),
             ("dim", f"Thinking: {'on' if thinking else 'off'} ( /think to toggle )"),
             ("dim", "Confirm gate on mutating tools (confirmed=False)"),
             *([("dim", "Langfuse: enabled")] if langfuse else []),
@@ -1235,12 +1245,15 @@ def run_langchain_chat(
         tracker=tracker,
         model=model,
         tool_mode=tool_mode,
+        persona=persona,
         tool_holder=tool_holder,
+        persona_holder=persona_holder,
         run_config=run_config,
         thinking_holder=thinking_holder,
         thinking_handler=thinking_handler,
         rebuild_fn=rebuild,
         change_mode_fn=change_mode,
+        change_persona_fn=change_persona,
         console=console,
     )
 
@@ -1287,12 +1300,15 @@ class LangChainRunner:
         tracker: _UsageTracker,
         model: str,
         tool_mode: str,
+        persona: str = "platform-admin",
         tool_holder: dict[str, Any] | None = None,
+        persona_holder: dict[str, str] | None = None,
         run_config: dict[str, Any],
         thinking_holder: list[bool],
         thinking_handler: Any,
         rebuild_fn: Callable[[], None],
         change_mode_fn: Callable[[str], None] | None = None,
+        change_persona_fn: Callable[[str], None] | None = None,
         console: Any,
     ) -> None:
         self._executor_holder = executor_holder
@@ -1300,12 +1316,15 @@ class LangChainRunner:
         self._tracker = tracker
         self._model = model
         self._tool_mode = tool_mode
+        self._persona = persona
         self._tool_holder = tool_holder
+        self._persona_holder = persona_holder
         self._run_config = run_config
         self._thinking_holder = thinking_holder
         self._thinking_handler = thinking_handler
         self._rebuild_fn = rebuild_fn
         self._change_mode_fn = change_mode_fn
+        self._change_persona_fn = change_persona_fn
         self._console = console
 
     # ── TurnRunner protocol ───────────────────────────────────────────────────
@@ -1354,6 +1373,15 @@ class LangChainRunner:
             return
         self._change_mode_fn(new_mode)
         self._tool_mode = new_mode
+
+    def change_persona(self, new_persona: str) -> None:
+        """Switch persona, filter tools to the new role, and rebuild the executor."""
+        if self._change_persona_fn is None:
+            return
+        self._change_persona_fn(new_persona)
+        self._persona = new_persona
+        if self._persona_holder is not None:
+            self._persona_holder["persona"] = new_persona
 
     # ── REPL command handler ──────────────────────────────────────────────────
 
@@ -1429,12 +1457,13 @@ class LangChainRunner:
             print_tip(self._console, f"Mode: {new_mode}  ({tool_count} tools)")
 
         def _on_help() -> None:
-            from kubeflow_mcp.agents.runtime.repl_commands import VALID_MODES
+            from kubeflow_mcp.agents.runtime.repl_commands import VALID_MODES, VALID_PERSONAS
 
             rows = [
                 ("/help", "Show this help message"),
                 ("/tools", "List active tools for the current mode"),
                 (f"/mode [{' | '.join(VALID_MODES)}]", "Show or switch tool mode (no arg = show current)"),
+                (f"/persona [{' | '.join(VALID_PERSONAS)}]", "Show or switch persona / role (no arg = show current)"),
                 ("/think", "Toggle chain-of-thought thinking display on/off"),
                 ("/export", "Save current session to a JSON snapshot file"),
                 ("/import <file>", "Restore session from a JSON snapshot file"),
@@ -1444,18 +1473,49 @@ class LangChainRunner:
             self._console.print()
             from rich.table import Table
             t = Table(show_header=False, box=None, padding=(0, 2))
-            t.add_column(style="bright_white", no_wrap=True, min_width=32)
+            t.add_column(style="bright_white", no_wrap=True, min_width=40)
             t.add_column(style="dim")
             for cmd, desc in rows:
                 t.add_row(cmd, desc)
             self._console.print(t)
             self._console.print()
 
+        def _on_persona(arg: str) -> None:
+            from kubeflow_mcp.agents.runtime.repl_commands import VALID_PERSONAS
+
+            if not arg:
+                tool_count = len(self._executor_holder.get("lc_tools") or [])
+                print_tip(
+                    self._console,
+                    f"Current persona: {self._persona}  ({tool_count} tools)  |  "
+                    f"Available: {', '.join(VALID_PERSONAS)}  |  Usage: /persona <role>",
+                )
+                return
+            new_persona = arg.lower()
+            if new_persona not in VALID_PERSONAS:
+                print_tip(
+                    self._console,
+                    f"Unknown persona {new_persona!r}. Choose: {', '.join(VALID_PERSONAS)}",
+                    style="red",
+                )
+                return
+            if new_persona == self._persona:
+                print_tip(self._console, f"Already using {new_persona!r} persona.")
+                return
+            print_tip(self._console, f"Switching to {new_persona!r} persona…", style="dim")
+            try:
+                self.change_persona(new_persona)
+            except Exception as exc:
+                print_tip(self._console, f"Persona switch failed: {exc}", style="red")
+                return
+            tool_count = len(self._executor_holder.get("lc_tools") or [])
+            print_tip(self._console, f"Persona: {new_persona}  ({tool_count} tools)")
+
         def _on_unknown(command: str) -> None:
             print_tip(
                 self._console,
                 f"Unknown command: {command!r}. "
-                "Try /help  /tools  /mode <mode>  /think  /export  /import <file>  /clear",
+                "Try /help  /tools  /mode <mode>  /persona <role>  /think  /export  /import <file>  /clear",
             )
 
         handlers = CommonReplHandlers(
@@ -1467,5 +1527,6 @@ class LangChainRunner:
             on_unknown=_on_unknown,
             on_mode=_on_mode,
             on_help=_on_help,
+            on_persona=_on_persona,
         )
         return handle_common_repl_command(line, handlers)

@@ -51,8 +51,8 @@ CLIENT_TOOL_DESCRIPTIONS: dict[str, str] = {
         "One-shot: compatibility + cluster resources + model estimate + runtimes. "
         "Call FIRST. Pass model= for GPU sizing."
     ),
-    "check_compatibility": "Verify K8s version, Trainer CRD, installed packages, and platform. Use pre_flight() for full check.",
-    "get_cluster_resources": "Check cluster GPU/CPU availability. Use pre_flight() instead for full check.",
+    "check_compatibility": "Verify K8s version, Trainer CRD, installed packages, and platform. Takes NO arguments. Prefer pre_flight() which runs this plus resource checks in one call.",
+    "get_cluster_resources": "Check cluster GPU/CPU/memory availability. Takes NO arguments. Prefer pre_flight() which runs this plus compatibility checks in one call.",
     "estimate_resources": "Estimate GPU memory needed for a HuggingFace model. Use pre_flight(model=...) instead.",
     "list_training_jobs": "List training jobs. Filter by runtime, status, or namespace.",
     "get_training_job": "Get details of a specific training job. Supports optional namespace.",

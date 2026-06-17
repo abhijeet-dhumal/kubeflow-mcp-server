@@ -279,7 +279,16 @@ def describe_tools(tool_names: list[str]) -> dict[str, Any]:
             continue
 
         tool = TOOL_REGISTRY[name]
-        sig = inspect.signature(tool["func"])
+        func = tool["func"]
+        if func is None:
+            func = _resolve_lazy_func(name)
+            if func is not None:
+                TOOL_REGISTRY[name]["func"] = func  # cache for next call
+        if func is None:
+            results.append({"name": name, "error": "Tool not resolvable — trainer SDK unavailable"})
+            continue
+
+        sig = inspect.signature(func)
         params: dict[str, Any] = {}
         for param_name, param in sig.parameters.items():
             param_info: dict[str, Any] = {"type": "any"}
@@ -330,7 +339,17 @@ def execute_tool(tool_name: str, arguments: dict[str, Any] | None = None) -> dic
             return {"error": f"Tool '{tool_name}' could not be resolved — trainer SDK unavailable."}
         TOOL_REGISTRY[tool_name]["func"] = func  # cache for next call
 
-    args = arguments or {}
+    args = dict(arguments or {})
+    # Silently remap common model hallucinations to the actual param names so the
+    # model doesn't waste a round-trip on describe_tools + retry.
+    _ALIAS_MAP: dict[str, str] = {
+        "job_name": "name",   # model often uses job_name instead of name
+        "code": "script",     # model sometimes uses code instead of script
+        "num_epochs": "epochs",
+    }
+    for alias, canonical in _ALIAS_MAP.items():
+        if alias in args and canonical not in args:
+            args[canonical] = args.pop(alias)
 
     # Gap 6D: annotate the currently active OTel span with the *inner* tool name
     # so traces show "execute_tool → pre_flight" instead of just "execute_tool".
