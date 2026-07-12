@@ -16,6 +16,16 @@ import os
 
 import pytest
 
+_MCP_ENV_PREFIX = "KUBEFLOW_MCP_"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mcp_env():
+    """Clear KUBEFLOW_MCP_* env vars so config default tests are deterministic."""
+    saved = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith(_MCP_ENV_PREFIX)}
+    yield
+    os.environ.update(saved)
+
 
 @pytest.fixture(autouse=True)
 def _reset_policy_cache():

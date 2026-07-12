@@ -34,12 +34,14 @@ class TestToolDescriptionIntegrity:
         for name, ann in CLIENT_TOOL_ANNOTATIONS.items():
             assert "readOnlyHint" in ann, f"Tool '{name}' missing readOnlyHint"
 
-    def test_description_checksums_are_stable(self):
-        """Generates checksums — pin these in CI to catch unintended changes."""
-        checksums = {}
-        for name, desc in sorted(CLIENT_TOOL_DESCRIPTIONS.items()):
-            checksums[name] = hashlib.sha256(desc.encode()).hexdigest()[:16]
-        assert len(checksums) == len(CLIENT_TOOL_DESCRIPTIONS)
+    def test_description_checksums_generated(self):
+        """Compute checksums for future baseline pinning (see TODO below)."""
+        checksums = {
+            name: hashlib.sha256(desc.encode()).hexdigest()[:16]
+            for name, desc in sorted(CLIENT_TOOL_DESCRIPTIONS.items())
+        }
+        assert checksums
+        assert all(len(digest) == 16 for digest in checksums.values())
 
     # TODO(test): pin checksum baseline and assert equality across releases
     # TODO(test): test create_server produces deterministic tool set per persona

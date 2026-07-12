@@ -119,9 +119,14 @@ class TestGetBreaker:
 
 class TestResetBreakers:
     def test_clears_all(self):
-        get_breaker("should_disappear")
+        original = get_breaker("should_disappear")
+        for _ in range(3):
+            original.record_failure()
+        assert original.failure_count >= 3
+
         reset_breakers()
         new = get_breaker("should_disappear")
+        assert new is not original
         assert new.failure_count == 0
 
 

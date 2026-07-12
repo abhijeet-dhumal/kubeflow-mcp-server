@@ -61,7 +61,7 @@ make verify
 ```bash
 make test-python           # run all unit tests with coverage
 uv run pytest tests/unit/  # run only unit tests (no coverage report)
-uv run pytest tests/unit/core/test_security.py -k "test_valid_name"  # single test
+uv run pytest tests/unit/core/test_security.py -k "test_validate_k8s_name"  # single test
 ```
 
 ### Test Layout

@@ -182,7 +182,13 @@ def test_read_only_true_when_set():
 
 
 def test_reload_policy_clears_cache():
-    reload_policy()
+    with patch("kubeflow_mcp.core.policy._load_policy_file") as load_policy:
+        load_policy.return_value = {"policy": {"namespaces": ["old-ns"]}}
+        assert get_allowed_namespaces() == ["old-ns"]
+
+        load_policy.return_value = {"policy": {"namespaces": ["new-ns"]}}
+        reload_policy()
+        assert get_allowed_namespaces() == ["new-ns"]
 
 
 # TODO(test): test reload_policy + get_allowed_namespaces reflects new file

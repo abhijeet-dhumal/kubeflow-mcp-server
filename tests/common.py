@@ -102,7 +102,7 @@ def assert_test_case(
 
     if isinstance(result, dict):
         if test_case.expected_status == SUCCESS:
-            assert result.get("success") is True or result.get("status") not in ("error",)
+            assert result.get("success") is True, f"Expected success response, got: {result!r}"
         elif test_case.expected_status == FAILED:
             assert result.get("success") is False
             if test_case.expected_error_code:
