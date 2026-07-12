@@ -56,13 +56,48 @@ make verify
 
 ## Testing
 
-The project includes unit tests to ensure code quality and functionality.
-
-### Unit Testing
-To run unit tests locally, use the following `make` command:
+### Running Tests
 
 ```bash
-make test-python
+make test-python           # run all unit tests with coverage
+uv run pytest tests/unit/  # run only unit tests (no coverage report)
+uv run pytest tests/unit/core/test_security.py -k "test_valid_name"  # single test
+```
+
+### Test Layout
+
+```
+tests/
+├── common.py                    # TestCase dataclass, assert_test_case(), status constants
+├── conftest.py                  # autouse: policy cache reset, circuit breaker reset, mock_env_vars
+├── unit/
+│   ├── conftest.py              # mock_trainer_client, mock_k8s_apis, create_mock_trainjob, verify_tool_*
+│   ├── common/                  # common/types.py, constants.py, utils.py
+│   ├── core/                    # security, resilience, config, policy, auth, telemetry, middleware
+│   └── trainer/                 # planning, training, discovery, monitoring, lifecycle, platform
+├── integration/                 # reserved for SDK integration tests (requires K8s cluster)
+└── e2e/                         # reserved for MCP protocol conformance tests
+```
+
+### Writing Tests
+
+- Match the existing style: Apache 2.0 header, module-level `def test_*()` functions, `pytest` fixtures.
+- Use `TestCase` + `@pytest.mark.parametrize` for table-driven validation tests; call `assert_test_case(test_case, fn)` for tool/validator boundaries.
+- Use autouse fixtures from `tests/conftest.py` (policy cache and circuit breaker resets, `mock_env_vars`).
+- Use SDK/K8s mocks from `tests/unit/conftest.py` (`mock_trainer_client`, `mock_k8s_apis`, `tmp_policy_file`).
+- Use factories from `tests/unit/conftest.py` (`create_mock_trainjob`, `create_mock_runtime`, `verify_tool_success`, `verify_tool_error`).
+- Sentinel names for mock dispatchers: `VALID_JOB_NAME`, `NOT_FOUND_NAME`, `TIMEOUT_NAME` (defined in `tests/unit/conftest.py`).
+- Look for `# TODO(test):` markers in existing test files — these indicate specific gaps to fill.
+- Prefer `monkeypatch` over `unittest.mock.patch` for module-level state.
+- Keep tests fast: mock all K8s/SDK calls, no real cluster access in unit tests. Skip slow tests with `pytest -m "not slow"`.
+
+### Coverage Gaps
+
+Test files contain `# TODO(test):` comments marking specific untested scenarios.
+Run this to find them:
+
+```bash
+grep -rn "TODO(test):" tests/
 ```
 
 ### Conformance Testing
