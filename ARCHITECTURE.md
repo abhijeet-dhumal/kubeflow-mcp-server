@@ -188,7 +188,7 @@ Kubernetes API Server (RBAC enforced)
 
 ### What the MCP Server Does NOT Control
 
-- **Kubernetes RBAC** — the server operates under the caller's permissions; it cannot grant access beyond what the Kubeconfig allows
+- **Kubernetes RBAC** — all tool calls use the server process Kubeconfig / ServiceAccount; HTTP auth does not map callers to distinct Kubernetes identities (see Identity below)
 - **Network security** — TLS, ingress, and API gateway configuration are infrastructure concerns
 - **Secret management** — the server does not store credentials; it reads Kubeconfig from the environment
 
@@ -265,10 +265,20 @@ kind: ClusterRole
 metadata:
   name: kubeflow-mcp-server
 rules:
-  # Planning: get_cluster_resources
+  # Health: health_check probes list_namespace
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+
+  # Planning: get_cluster_resources / platform detection
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
+
+  # Planning: check_compatibility reads the Trainer CRD
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
 
   # Discovery + Monitoring: list/get jobs, logs, events
   - apiGroups: ["trainer.kubeflow.org"]
@@ -294,9 +304,21 @@ kind: ClusterRole
 metadata:
   name: kubeflow-mcp-readonly
 rules:
+  # Health: health_check probes list_namespace
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+
+  # Planning: get_cluster_resources / platform detection
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
+
+  # Planning: check_compatibility reads the Trainer CRD
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
+
   - apiGroups: ["trainer.kubeflow.org"]
     resources: ["trainjobs", "clustertrainingruntimes"]
     verbs: ["list", "get"]
@@ -307,7 +329,11 @@ rules:
 
 #### Namespace-Scoped (recommended for multi-tenant)
 
-Replace `ClusterRole` / `ClusterRoleBinding` with `Role` / `RoleBinding` in specific namespaces, and configure `~/.kf-mcp-policy.yaml`:
+TrainJob / pod / event access can use a namespaced `Role` + `RoleBinding`. Cluster-scoped
+resources (`nodes`, `namespaces`, `clustertrainingruntimes`, CRDs) still need a
+`ClusterRole` + `ClusterRoleBinding` — a RoleBinding alone cannot grant them.
+
+Restrict which namespaces tools may target via `~/.kf-mcp-policy.yaml`:
 
 ```yaml
 policy:

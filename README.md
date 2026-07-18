@@ -270,7 +270,7 @@ make inspector TRANSPORT=sse      # Inspector + SSE (start server separately)
 
 - **[CONTRIBUTING](CONTRIBUTING.md)**: Development workflow and PR guidelines
 - **[ROADMAP](ROADMAP.md)**: Project roadmap
-- **[SECURITY](SECURITY.md)**: Threat model, RBAC, and hardening checklist
+- **[SECURITY](SECURITY.md)**: Vulnerability reporting; see [ARCHITECTURE.md#security-model](ARCHITECTURE.md#security-model) for threat model, RBAC, and hardening
 - **[KEP-936](https://github.com/kubeflow/community/tree/master/proposals/936-kubeflow-mcp-server)**: Design proposal
 
 ## License
