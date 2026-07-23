@@ -191,13 +191,11 @@ def test_validate_resource_limits(test_case):
     ],
 )
 def test_validate_training_bounds(test_case):
-    print("Executing test:", test_case.name)
     result = validate_training_bounds(**test_case.config)
     if test_case.expected_status == SUCCESS:
         assert result is None
     else:
         assert result is not None
-    print("test execution complete")
 
 
 # ─── Script safety (AST) ────────────────────────────────────────────────────
@@ -269,7 +267,6 @@ def test_validate_training_bounds(test_case):
     ],
 )
 def test_is_safe_python_code(test_case):
-    print("Executing test:", test_case.name)
     safe, reason = is_safe_python_code(test_case.config["code"])
     if test_case.expected_status == SUCCESS:
         assert safe is True
@@ -278,7 +275,6 @@ def test_is_safe_python_code(test_case):
         assert safe is False
         if test_case.expected_output:
             assert test_case.expected_output in reason
-    print("test execution complete")
 
 
 # ─── Sensitive data masking ──────────────────────────────────────────────────
@@ -326,10 +322,8 @@ def test_is_safe_python_code(test_case):
     ],
 )
 def test_mask_sensitive_data(test_case):
-    print("Executing test:", test_case.name)
     result = mask_sensitive_data(test_case.config["data"])
     assert result[test_case.config["key"]] == test_case.config["expected"]
-    print("test execution complete")
 
 
 def test_mask_sensitive_data_recurses_into_nested_dicts():
