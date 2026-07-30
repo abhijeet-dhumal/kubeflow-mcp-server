@@ -53,7 +53,7 @@ from tests.common import FAILED, PREVIEW, VALIDATION_ERROR, TestCase, assert_tes
             name="preview includes model in config",
             expected_status=PREVIEW,
             config={"model": "hf://org/model", "dataset": "hf://org/ds"},
-            expected_output={"key": "model", "value": "hf://org/model"},
+            expected_output={"model": "hf://org/model"},
         ),
         TestCase(
             name="invalid name format rejected",
@@ -141,13 +141,11 @@ def test_run_custom_training_validation(test_case):
 
 
 def test_run_container_training_invalid_name():
-    print("Executing test: invalid name rejected")
     result = run_container_training(
         image="ghcr.io/kubeflow/trainer/torch:latest",
         name="BadName",
     )
     assert result["success"] is False
-    print("test execution complete")
 
 
 # TODO(test): test preview returns config without submitting

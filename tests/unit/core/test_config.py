@@ -76,7 +76,6 @@ def test_load_config_defaults_when_no_file():
     ],
 )
 def test_load_config_env_overrides(test_case):
-    print("Executing test:", test_case.name)
     with (
         patch("kubeflow_mcp.core.config._find_config_file", return_value=None),
         patch.dict("os.environ", test_case.config["env"]),
@@ -84,7 +83,6 @@ def test_load_config_env_overrides(test_case):
         cfg = load_config()
     section, field = test_case.expected_output["field"].split(".")
     assert getattr(getattr(cfg, section), field) == test_case.expected_output["value"]
-    print("test execution complete")
 
 
 def test_load_config_from_file(tmp_path):

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -100,7 +101,9 @@ def mock_trainer_client():
     """Patch TrainerClient accessors and return a configured MagicMock."""
     client = _configure_trainer_client_mock(MagicMock())
     patches = [patch(target, return_value=client) for target in _TRAINER_CLIENT_PATCHES]
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
         yield client
 
 

@@ -54,13 +54,11 @@ class TestCase:
             ),
         ])
         def test_validate_name(test_case):
-            print("Executing test:", test_case.name)
             result = validate_k8s_name(test_case.config["name"])
             if test_case.expected_status == SUCCESS:
                 assert result is None
             else:
                 assert result is not None
-            print("test execution complete")
     """
 
     name: str
@@ -87,13 +85,11 @@ def assert_test_case(
     Supports tool dict responses (``success`` / ``status`` keys) and validator
     functions that return ``None`` on success or a ``ToolError`` on failure.
     """
-    print("Executing test:", test_case.name)
     try:
         result = fn(**test_case.config, **extra_kwargs)
     except Exception as e:
         assert test_case.expected_error is not None, f"Unexpected exception: {e}"
-        assert type(e) is test_case.expected_error
-        print("test execution complete")
+        assert isinstance(e, test_case.expected_error)
         return None
 
     assert test_case.expected_error is None, (
@@ -117,7 +113,6 @@ def assert_test_case(
     if test_case.expected_output is not None:
         _assert_expected_output(result, test_case.expected_output)
 
-    print("test execution complete")
     return result
 
 
@@ -126,15 +121,9 @@ def _assert_expected_output(result: Any, expected_output: Any) -> None:
         assert result == expected_output
         return
 
-    if set(expected_output) == {"key", "value"}:
-        key = expected_output["key"]
-        value = expected_output["value"]
-        assert result.get("config", {}).get(key) == value or result.get(key) == value
-        return
-
     for key, value in expected_output.items():
         assert (
             result.get(key) == value
             or result.get("config", {}).get(key) == value
             or result.get("data", {}).get(key) == value
-        )
+        ), f"Expected {key}={value!r} in result/config/data, got: {result!r}"

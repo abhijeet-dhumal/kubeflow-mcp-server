@@ -85,10 +85,8 @@ def test_non_category_returns_as_is():
     ],
 )
 def test_matches_pattern(test_case):
-    print("Executing test:", test_case.name)
     result = _matches_pattern(test_case.config["tool"], test_case.config["pattern"])
     assert result is test_case.expected_output
-    print("test execution complete")
 
 
 # ─── apply_policy_filters ───────────────────────────────────────────────────
@@ -131,14 +129,12 @@ def test_matches_pattern(test_case):
     ],
 )
 def test_apply_policy_filters(test_case):
-    print("Executing test:", test_case.name)
     result = apply_policy_filters(test_case.config["tools"], test_case.config["policy"])
     if test_case.expected_output is not None:
         assert result == test_case.expected_output
     else:
         assert "fine_tune" in result
         assert "delete_training_job" not in result
-    print("test execution complete")
 
 
 # TODO(test): test allow with category:planning

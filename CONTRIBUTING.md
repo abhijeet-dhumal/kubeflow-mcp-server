@@ -58,6 +58,11 @@ make verify
 
 ### Running Tests
 
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) on your `PATH`
+(see [Getting Started](#getting-started) for macOS/Linux install, or the
+[uv install docs](https://docs.astral.sh/uv/getting-started/installation/) for Windows).
+`make install-dev` / `make uv` can also install it for you.
+
 ```bash
 make test-python           # run all unit tests with coverage
 uv run pytest tests/unit/  # run only unit tests (no coverage report)
