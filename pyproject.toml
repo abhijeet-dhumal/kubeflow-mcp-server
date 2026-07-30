@@ -47,6 +47,12 @@ otel = [
     "opentelemetry-sdk>=1.29.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/kubeflow/mcp-server"
+Documentation = "https://github.com/kubeflow/mcp-server#readme"
+Source = "https://github.com/kubeflow/mcp-server"
+Issues = "https://github.com/kubeflow/mcp-server/issues"
+
 [project.scripts]
 kubeflow-mcp = "kubeflow_mcp.cli:cli"
 
