@@ -71,12 +71,13 @@ make release VERSION=X.Y.Z      # e.g. make release VERSION=0.1.0
 This updates:
 
 - `kubeflow_mcp/__init__.py` → `__version__ = "X.Y.Z"`
+- `server.json` → top-level and PyPI package `version` fields (MCP Registry metadata)
 - `CHANGELOG/CHANGELOG-X.Y.md` → a new top entry `# [X.Y.Z] (YYYY-MM-DD)`
   (skipped for `rcN`)
 
 ### 2. Open a pull request
 
-- Review `kubeflow_mcp/__init__.py` and `CHANGELOG/CHANGELOG-X.Y.md`.
+- Review `kubeflow_mcp/__init__.py`, `server.json`, and `CHANGELOG/CHANGELOG-X.Y.md`.
 - **Latest minor series:** open the PR against `main`.
 - **Older minor-series patch** (e.g. `0.1.1` when `main` is on `0.2.x`): check out the
   `release-X.Y` branch and open the PR against it.

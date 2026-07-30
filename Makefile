@@ -108,13 +108,19 @@ endif
 ##@ Release
 
 .PHONY: release
-release: install-dev ## Bump the version in kubeflow_mcp/__init__.py (VERSION=X.Y.Z[rcN])
+release: install-dev ## Bump version in __init__.py and server.json (VERSION=X.Y.Z[rcN])
 	@if [ -z "$(VERSION)" ] || ! echo "$(VERSION)" | grep -E -q '^[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?$$'; then \
 		echo "Error: VERSION must be set in X.Y.Z or X.Y.ZrcN format. Usage: make release VERSION=X.Y.Z[rcN]"; \
 		exit 1; \
 	fi
+	@if [ ! -f server.json ]; then \
+		echo "Error: server.json not found (required for MCP Registry metadata)"; \
+		exit 1; \
+	fi
 	@$(SED) -i 's/^__version__ = ".*"/__version__ = "$(VERSION)"/' kubeflow_mcp/__init__.py
 	@echo "Version bumped to $(VERSION) in kubeflow_mcp/__init__.py"
+	@$(SED) -E -i 's/"version": "[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?"/"version": "$(VERSION)"/g' server.json
+	@echo "Version bumped to $(VERSION) in server.json"
 	@if echo "$(VERSION)" | grep -E -q 'rc[0-9]+$$'; then \
 		echo "Skipping changelog generation for RC release $(VERSION)"; \
 	else \
