@@ -21,9 +21,9 @@ K8s API interaction tests require mocking and are marked as TODOs.
 from __future__ import annotations
 
 import pytest
+from tests.common import FAILED, SUCCESS, VALIDATION_ERROR, TestCase, assert_test_case
 
 from kubeflow_mcp.trainer.api.platform import create_runtime, patch_runtime
-from tests.common import FAILED, SUCCESS, VALIDATION_ERROR, TestCase, assert_test_case
 
 
 @pytest.mark.parametrize(

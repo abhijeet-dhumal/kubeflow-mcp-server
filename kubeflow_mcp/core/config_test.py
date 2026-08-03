@@ -20,12 +20,12 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from tests.common import TestCase
 
 from kubeflow_mcp.core.config import (
     ServerConfig,
     load_config,
 )
-from tests.common import TestCase
 
 
 def test_server_config_defaults():

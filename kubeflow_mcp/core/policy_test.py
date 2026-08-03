@@ -19,6 +19,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from tests.common import TestCase
 
 from kubeflow_mcp.core.policy import (
     _expand_category,
@@ -30,7 +31,6 @@ from kubeflow_mcp.core.policy import (
     reload_policy,
     set_effective_persona,
 )
-from tests.common import TestCase
 
 # ─── Effective persona ──────────────────────────────────────────────────────
 

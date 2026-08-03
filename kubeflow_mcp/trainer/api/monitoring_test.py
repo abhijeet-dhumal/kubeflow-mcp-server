@@ -22,9 +22,9 @@ get_training_events, wait_for_training) require mocking and are marked as TODOs.
 from __future__ import annotations
 
 import pytest
+from tests.common import TestCase
 
 from kubeflow_mcp.trainer.api.monitoring import _FAILURE_PATTERNS, _extract_failure_hint
-from tests.common import TestCase
 
 
 def test_extract_failure_hint_openshift_pip_error():

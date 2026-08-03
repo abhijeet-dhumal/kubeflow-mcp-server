@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from tests.common import TestCase
 
 from kubeflow_mcp.trainer.api.planning import (
     _estimate_from_params,
@@ -26,7 +27,6 @@ from kubeflow_mcp.trainer.api.planning import (
     _suggest_hf_model_ids,
     estimate_resources,
 )
-from tests.common import TestCase
 
 
 def _fake_models(*ids):

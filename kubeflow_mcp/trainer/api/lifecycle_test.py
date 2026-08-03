@@ -21,9 +21,9 @@ marked as TODOs.
 from __future__ import annotations
 
 import pytest
+from tests.common import FAILED, VALIDATION_ERROR, TestCase, assert_test_case
 
 from kubeflow_mcp.trainer.api.lifecycle import delete_training_job, update_training_job
-from tests.common import FAILED, VALIDATION_ERROR, TestCase, assert_test_case
 
 
 @pytest.mark.parametrize(
