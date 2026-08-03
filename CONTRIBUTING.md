@@ -56,70 +56,15 @@ make verify
 
 ## Testing
 
-### Running Tests
-
-Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) on your `PATH`
-(see [Getting Started](#getting-started) for macOS/Linux install, or the
-[uv install docs](https://docs.astral.sh/uv/getting-started/installation/) for Windows).
-`make install-dev` / `make uv` can also install it for you.
-
 ```bash
-make test-python           # run all unit tests with coverage
-uv run pytest kubeflow_mcp/  # run only package tests (no coverage report)
+make test-python           # unit tests + coverage
 uv run pytest kubeflow_mcp/core/security_test.py -k "test_validate_k8s_name"  # single test
 ```
 
-### Test Layout
-
-Unit tests are co-located alongside source files using the `<module>_test.py` convention
-(matching [Kubeflow SDK](https://github.com/kubeflow/sdk/blob/main/AGENTS.md#3-testing-requirements)):
-
-```
-conftest.py                          # autouse: env isolation, policy cache reset, circuit breaker reset
-tests/
-├── common.py                        # TestCase dataclass, assert_test_case(), status constants
-├── conformance/                     # MCP protocol conformance tests (expected-failures.yaml)
-├── integration/                     # reserved for SDK integration tests (requires K8s cluster)
-└── e2e/                             # reserved for end-to-end tests
-kubeflow_mcp/
-├── conftest.py                      # mock_trainer_client, mock_k8s_apis, create_mock_trainjob, verify_tool_*
-├── cli_test.py                      # CLI entry point tests
-├── common/
-│   ├── constants_test.py
-│   ├── types_test.py
-│   └── utils_test.py
-├── core/
-│   ├── auth_test.py
-│   ├── config_test.py
-│   ├── security_test.py
-│   ├── ...                          # one *_test.py per source module
-└── trainer/api/
-    ├── discovery_test.py
-    ├── training_test.py
-    ├── sdk_contracts_test.py
-    ├── ...                          # one *_test.py per source module
-```
-
-### Writing Tests
-
-- Match the existing style: Apache 2.0 header, module-level `def test_*()` functions, `pytest` fixtures.
-- Use `TestCase` + `@pytest.mark.parametrize` for table-driven validation tests; call `assert_test_case(test_case, fn)` for tool/validator boundaries.
-- Use autouse fixtures from the root `conftest.py` (env isolation, policy cache and circuit breaker resets).
-- Use SDK/K8s mocks from `kubeflow_mcp/conftest.py` (`mock_trainer_client`, `mock_k8s_apis`, `tmp_policy_file`).
-- Use factories from `kubeflow_mcp/conftest.py` (`create_mock_trainjob`, `create_mock_runtime`, `verify_tool_success`, `verify_tool_error`).
-- Sentinel names for mock dispatchers: `VALID_JOB_NAME`, `NOT_FOUND_NAME`, `TIMEOUT_NAME` (defined in `kubeflow_mcp/conftest.py`).
-- Look for `# TODO(test):` markers in existing test files — these indicate specific gaps to fill.
-- Prefer `monkeypatch` over `unittest.mock.patch` for module-level state.
-- Keep tests fast: mock all K8s/SDK calls, no real cluster access in unit tests. Skip slow tests with `pytest -m "not slow"`.
-
-### Coverage Gaps
-
-Test files contain `# TODO(test):` comments marking specific untested scenarios.
-Run this to find them:
-
-```bash
-grep -rn "TODO(test):" kubeflow_mcp/
-```
+Unit tests are co-located as `<module>_test.py` next to source files
+([Kubeflow SDK convention](https://github.com/kubeflow/sdk/blob/main/AGENTS.md#3-testing-requirements)).
+Shared fixtures live in `conftest.py` (root) and `kubeflow_mcp/conftest.py`;
+shared helpers in `tests/common.py`. Look for `# TODO(test):` markers for gaps to fill.
 
 ### Conformance Testing
 
