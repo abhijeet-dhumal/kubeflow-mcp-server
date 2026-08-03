@@ -21,13 +21,13 @@ K8s API interaction tests require mocking the SDK and are marked as TODOs.
 from __future__ import annotations
 
 from tests.common import RESOURCE_NOT_FOUND
-from tests.unit.conftest import (
+
+from kubeflow_mcp.conftest import (
     NOT_FOUND_NAME,
     VALID_JOB_NAME,
     verify_tool_error,
     verify_tool_success,
 )
-
 from kubeflow_mcp.trainer.api.discovery import (
     _JOB_STATUS_FILTER_ALIASES,
     _trainjob_runtime_to_mcp,

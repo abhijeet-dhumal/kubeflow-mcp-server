@@ -17,7 +17,7 @@
 Verifies that registered tools have complete, consistent metadata.
 Prevents silent drift in tool descriptions across releases.
 
-See also: tests/unit/trainer/test_architecture.py for full metadata consistency tests.
+See also: kubeflow_mcp/trainer/api/architecture_test.py for full metadata consistency tests.
 """
 
 import hashlib

@@ -65,33 +65,49 @@ Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) on your `
 
 ```bash
 make test-python           # run all unit tests with coverage
-uv run pytest tests/unit/  # run only unit tests (no coverage report)
-uv run pytest tests/unit/core/test_security.py -k "test_validate_k8s_name"  # single test
+uv run pytest kubeflow_mcp/  # run only package tests (no coverage report)
+uv run pytest kubeflow_mcp/core/security_test.py -k "test_validate_k8s_name"  # single test
 ```
 
 ### Test Layout
 
+Unit tests are co-located alongside source files using the `<module>_test.py` convention
+(matching [Kubeflow SDK](https://github.com/kubeflow/sdk/blob/main/AGENTS.md#3-testing-requirements)):
+
 ```
+conftest.py                          # autouse: env isolation, policy cache reset, circuit breaker reset
 tests/
-├── common.py                    # TestCase dataclass, assert_test_case(), status constants
-├── conftest.py                  # autouse: policy cache reset, circuit breaker reset, mock_env_vars
-├── unit/
-│   ├── conftest.py              # mock_trainer_client, mock_k8s_apis, create_mock_trainjob, verify_tool_*
-│   ├── common/                  # common/types.py, constants.py, utils.py
-│   ├── core/                    # security, resilience, config, policy, auth, telemetry, middleware
-│   └── trainer/                 # planning, training, discovery, monitoring, lifecycle, platform
-├── integration/                 # reserved for SDK integration tests (requires K8s cluster)
-└── e2e/                         # reserved for MCP protocol conformance tests
+├── common.py                        # TestCase dataclass, assert_test_case(), status constants
+├── conformance/                     # MCP protocol conformance tests (expected-failures.yaml)
+├── integration/                     # reserved for SDK integration tests (requires K8s cluster)
+└── e2e/                             # reserved for end-to-end tests
+kubeflow_mcp/
+├── conftest.py                      # mock_trainer_client, mock_k8s_apis, create_mock_trainjob, verify_tool_*
+├── cli_test.py                      # CLI entry point tests
+├── common/
+│   ├── constants_test.py
+│   ├── types_test.py
+│   └── utils_test.py
+├── core/
+│   ├── auth_test.py
+│   ├── config_test.py
+│   ├── security_test.py
+│   ├── ...                          # one *_test.py per source module
+└── trainer/api/
+    ├── discovery_test.py
+    ├── training_test.py
+    ├── sdk_contracts_test.py
+    ├── ...                          # one *_test.py per source module
 ```
 
 ### Writing Tests
 
 - Match the existing style: Apache 2.0 header, module-level `def test_*()` functions, `pytest` fixtures.
 - Use `TestCase` + `@pytest.mark.parametrize` for table-driven validation tests; call `assert_test_case(test_case, fn)` for tool/validator boundaries.
-- Use autouse fixtures from `tests/conftest.py` (policy cache and circuit breaker resets, `mock_env_vars`).
-- Use SDK/K8s mocks from `tests/unit/conftest.py` (`mock_trainer_client`, `mock_k8s_apis`, `tmp_policy_file`).
-- Use factories from `tests/unit/conftest.py` (`create_mock_trainjob`, `create_mock_runtime`, `verify_tool_success`, `verify_tool_error`).
-- Sentinel names for mock dispatchers: `VALID_JOB_NAME`, `NOT_FOUND_NAME`, `TIMEOUT_NAME` (defined in `tests/unit/conftest.py`).
+- Use autouse fixtures from the root `conftest.py` (env isolation, policy cache and circuit breaker resets).
+- Use SDK/K8s mocks from `kubeflow_mcp/conftest.py` (`mock_trainer_client`, `mock_k8s_apis`, `tmp_policy_file`).
+- Use factories from `kubeflow_mcp/conftest.py` (`create_mock_trainjob`, `create_mock_runtime`, `verify_tool_success`, `verify_tool_error`).
+- Sentinel names for mock dispatchers: `VALID_JOB_NAME`, `NOT_FOUND_NAME`, `TIMEOUT_NAME` (defined in `kubeflow_mcp/conftest.py`).
 - Look for `# TODO(test):` markers in existing test files — these indicate specific gaps to fill.
 - Prefer `monkeypatch` over `unittest.mock.patch` for module-level state.
 - Keep tests fast: mock all K8s/SDK calls, no real cluster access in unit tests. Skip slow tests with `pytest -m "not slow"`.
@@ -102,7 +118,7 @@ Test files contain `# TODO(test):` comments marking specific untested scenarios.
 Run this to find them:
 
 ```bash
-grep -rn "TODO(test):" tests/
+grep -rn "TODO(test):" kubeflow_mcp/
 ```
 
 ### Conformance Testing
