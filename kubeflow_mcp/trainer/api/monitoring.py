@@ -153,6 +153,10 @@ def get_training_logs(
     Raises:
         ToolError: If job not found (``RESOURCE_NOT_FOUND``).
     """
+    name_err = validate_k8s_name(name)
+    if name_err is not None:
+        return name_err.model_dump()
+
     ns_err = check_namespace_allowed(namespace)
     if ns_err is not None:
         return ns_err.model_dump()
@@ -175,9 +179,6 @@ def get_training_logs(
         if not log_lines:
             try:
                 eff_ns = get_trainer_effective_namespace(namespace)
-                name_err = validate_k8s_name(name)
-                if name_err is not None:
-                    return name_err.model_dump()
                 v1 = get_core_v1_api()
                 pods = v1.list_namespaced_pod(
                     namespace=eff_ns,
@@ -271,6 +272,10 @@ def get_training_events(
           ``involved_object_name``, ``reason``, ``message``, ``event_time``
         - ``total`` (int): Total event count
     """
+    name_err = validate_k8s_name(name)
+    if name_err is not None:
+        return name_err.model_dump()
+
     ns_err = check_namespace_allowed(namespace)
     if ns_err is not None:
         return ns_err.model_dump()
@@ -344,6 +349,10 @@ def wait_for_training(
         - ``reached`` (bool): Whether a target status was reached
         - ``message`` (str): Status message or timeout notice
     """
+    name_err = validate_k8s_name(name)
+    if name_err is not None:
+        return name_err.model_dump()
+
     ns_err = check_namespace_allowed(namespace)
     if ns_err is not None:
         return ns_err.model_dump()
