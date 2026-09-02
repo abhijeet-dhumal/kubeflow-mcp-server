@@ -125,6 +125,11 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 3. Update documentation if needed
 4. Request review from maintainers
 
+## Adding a New Client Module
+
+Read [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) first — reference implementation:
+[`kubeflow_mcp/trainer/`](kubeflow_mcp/trainer/).
+
 ## Areas Open for Contribution
 
 - **OptimizerClient tools** - Hyperparameter optimization integration

@@ -77,6 +77,9 @@ kubeflow_mcp/                    # Main Python package (unit tests co-located as
 
 ## Tool Naming & Schema Conventions
 
+Full cross-client rules (module exports, personas, confirm gate, testing checklist):
+[`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
+
 - Tool function names are the MCP tool names — use `snake_case` verbs
   (`list_training_jobs`, `fine_tune`, `get_training_logs`).
 - Keep names stable; renaming is a breaking change for agents and clients.
