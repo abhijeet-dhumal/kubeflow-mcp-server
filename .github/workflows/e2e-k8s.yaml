@@ -27,7 +27,7 @@ permissions:
 jobs:
   e2e:
     name: E2E Test (Kind Cluster)
-    runs-on: oracle-vm-16cpu-64gb-x86-64
+    runs-on: cncf-ubuntu-16-64-x86
     # Successful runs take ~35-40 min (cluster setup + tests); cap well
     # above that so hung runs cannot hold the large runner indefinitely.
     timeout-minutes: 50
