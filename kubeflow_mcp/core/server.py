@@ -259,12 +259,34 @@ def _derive_tier(full_text: str, tier: str) -> str:
     return f"Tools: {', '.join(dict.fromkeys(tools))}"
 
 
+# Ordering used for a client that maps phases to sections but exports no
+# SECTION_ORDER. Matches the list that was hardcoded here before clients
+# declared their own, so such a client keeps its previous ordering.
+_DEFAULT_SECTION_ORDER = ["planning", "monitoring", "training", "platform"]
+
+
 def _sections_for_persona(persona: str) -> list[str]:
     """Derive which instruction sections a persona needs from its tool access."""
     allowed = get_allowed_tools(persona) or set(TOOL_TO_PHASE.keys())
     phases_used = {TOOL_TO_PHASE[t] for t in allowed if t in TOOL_TO_PHASE}
 
-    section_order = ["planning", "monitoring", "training", "platform"]
+    # Canonical ordering is assembled from each client module's SECTION_ORDER
+    # export, so adding a client never requires editing server.py.
+    preferred_order: list[str] = []
+    for module_path in CLIENT_MODULES.values():
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError:
+            continue
+        order = getattr(module, "SECTION_ORDER", None)
+        if order is None and getattr(module, "PHASE_TO_SECTION", None):
+            # A client that maps phases to sections but forgets SECTION_ORDER
+            # would otherwise fall through to the sorted() branch below and get
+            # alphabetical ordering, silently reordering its instructions. Fall
+            # back to the canonical order instead, which is what the previously
+            # hardcoded list produced.
+            order = _DEFAULT_SECTION_ORDER
+        preferred_order.extend(order or [])
 
     sections_needed: set[str] = set()
     for module_path in CLIENT_MODULES.values():
@@ -278,7 +300,14 @@ def _sections_for_persona(persona: str) -> list[str]:
         except ImportError:
             continue
 
-    return [s for s in section_order if s in sections_needed]
+    # dict.fromkeys de-duplicates while preserving order: two clients may name
+    # the same section, and it must not appear twice in the result.
+    ordered = list(dict.fromkeys(s for s in preferred_order if s in sections_needed))
+    # Deterministic fallback: a section named in PHASE_TO_SECTION but absent
+    # from every SECTION_ORDER still appears, sorted, so the result never
+    # depends on set iteration order.
+    extra = sorted(sections_needed - set(preferred_order))
+    return ordered + extra
 
 
 def _build_server_instructions(
