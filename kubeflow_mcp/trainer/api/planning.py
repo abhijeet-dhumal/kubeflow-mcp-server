@@ -19,7 +19,7 @@ import re
 from typing import Any
 
 from kubeflow_mcp.common.constants import (
-    KUBEFLOW_SDK_VERSION_MIN,
+    KUBEFLOW_SDK_VERSION_SPEC,
     MIN_K8S_VERSION,
     MIN_TRAINER_CRD_VERSION,
     TRAINER_CRD_NAME,
@@ -277,40 +277,31 @@ def _check_trainer_crd(
 
 
 def _check_sdk_version(checks: dict[str, dict[str, Any]], blockers: list[str]) -> None:
-    """Check kubeflow-trainer package is installed and meets minimum version."""
+    """Check kubeflow package is installed within the supported SDK range."""
     import importlib.metadata
 
     try:
-        sdk_version = importlib.metadata.version("kubeflow-trainer")
+        sdk_version = importlib.metadata.version("kubeflow")
+        from packaging.specifiers import SpecifierSet
         from packaging.version import Version
 
-        sdk_min = KUBEFLOW_SDK_VERSION_MIN
-        sdk_ok = Version(sdk_version) >= Version(sdk_min)
+        spec = SpecifierSet(KUBEFLOW_SDK_VERSION_SPEC)
+        sdk_ok = Version(sdk_version) in spec
         checks["kubeflow_sdk"] = {
             "status": "pass" if sdk_ok else "fail",
             "version": sdk_version,
-            "minimum": sdk_min,
+            "required": KUBEFLOW_SDK_VERSION_SPEC,
         }
         if not sdk_ok:
-            blockers.append(f"kubeflow-trainer {sdk_version} is below minimum {sdk_min}")
+            blockers.append(
+                f"kubeflow {sdk_version} is installed; kubeflow-mcp requires "
+                f"kubeflow{KUBEFLOW_SDK_VERSION_SPEC}"
+            )
     except importlib.metadata.PackageNotFoundError:
-        try:
-            sdk_version = importlib.metadata.version("kubeflow")
-            from packaging.version import Version
-
-            sdk_min = KUBEFLOW_SDK_VERSION_MIN
-            sdk_ok = Version(sdk_version) >= Version(sdk_min)
-            checks["kubeflow_sdk"] = {
-                "status": "pass" if sdk_ok else "fail",
-                "version": sdk_version,
-                "minimum": sdk_min,
-                "package": "kubeflow",
-            }
-            if not sdk_ok:
-                blockers.append(f"kubeflow {sdk_version} is below minimum {sdk_min}")
-        except importlib.metadata.PackageNotFoundError:
-            checks["kubeflow_sdk"] = {"status": "fail", "error": "Not installed"}
-            blockers.append("kubeflow-trainer not installed (pip install kubeflow-trainer)")
+        checks["kubeflow_sdk"] = {"status": "fail", "error": "Not installed"}
+        blockers.append(
+            f'kubeflow not installed (pip install "kubeflow{KUBEFLOW_SDK_VERSION_SPEC}")'
+        )
     except ImportError:
         checks["kubeflow_sdk"] = {
             "status": "warn",
@@ -361,7 +352,7 @@ def check_compatibility() -> dict[str, Any]:
         1. **Kubernetes version** — minimum {min_k8s} required
         2. **Trainer CRD installed** — ``trainjobs.trainer.kubeflow.org`` must exist
         3. **CRD API version** — ``{crd_version}`` must be served
-        4. **Kubeflow training package** — minimum ``{sdk_min}`` required
+        4. **Kubeflow SDK** — ``{sdk_version}`` required
         5. **Platform detection** — identifies platform from node labels
 
     Returns:
@@ -379,7 +370,7 @@ def check_compatibility() -> dict[str, Any]:
     """.format(
         min_k8s=f"{MIN_K8S_VERSION[0]}.{MIN_K8S_VERSION[1]}",
         crd_version=MIN_TRAINER_CRD_VERSION,
-        sdk_min=KUBEFLOW_SDK_VERSION_MIN,
+        sdk_version=KUBEFLOW_SDK_VERSION_SPEC,
     )
     try:
         from kubeflow_mcp.common.utils import (

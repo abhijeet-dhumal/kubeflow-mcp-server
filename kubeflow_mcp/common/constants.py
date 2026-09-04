@@ -115,10 +115,11 @@ MIN_TRAINER_CRD_VERSION = "v1alpha1"
 TRAINER_CRD_GROUP = "trainer.kubeflow.org"
 TRAINER_CRD_NAME = "trainjobs.trainer.kubeflow.org"
 
-KUBEFLOW_SDK_VERSION = "0.4.1"
-KUBEFLOW_SDK_VERSION_MIN = "0.4.1"
-KUBEFLOW_SDK_VERSION_SPEC = f"=={KUBEFLOW_SDK_VERSION}"
-KUBEFLOW_TRAINER_VERSION_MIN = "v2.2.1"
+KUBEFLOW_SDK_VERSION = "0.5.0"
+KUBEFLOW_SDK_VERSION_MIN = "0.5.0"
+KUBEFLOW_SDK_VERSION_SPEC = ">=0.5.0,<0.6.0"
+KUBEFLOW_TRAINER_VERSION_MIN = "2.3.0"
+KUBEFLOW_TRAINER_VERSION_SPEC = ">=2.3.0,<2.4.0"
 KUBERNETES_VERSION_LABEL = f"{MIN_K8S_VERSION[0]}.{MIN_K8S_VERSION[1]}+"
 
 # =============================================================================
@@ -160,6 +161,8 @@ SDK_COMPATIBILITY: dict[str, object] = {
     "sdk_package": "kubeflow",
     "sdk_version_min": KUBEFLOW_SDK_VERSION_MIN,
     "trainer_version_min": KUBEFLOW_TRAINER_VERSION_MIN,
+    "sdk_version": KUBEFLOW_SDK_VERSION_SPEC,
+    "trainer_version": KUBEFLOW_TRAINER_VERSION_SPEC,
     "python_requires": ">=3.10",
     "kubernetes_requires": ">=1.27",
     "clients": {

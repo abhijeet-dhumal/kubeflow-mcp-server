@@ -187,7 +187,7 @@ class TestSDKTypeInstantiation:
         assert init.access_token == "hf_token123"
 
     def test_huggingface_model_initializer_accepts_any_uri(self):
-        """Test that HuggingFaceModelInitializer accepts arbitrary URIs (SDK 0.5.0+)."""
+        """Test that HuggingFaceModelInitializer accepts arbitrary URIs (SDK 0.5.0)."""
         init = sdk_types.HuggingFaceModelInitializer(storage_uri="https://huggingface.co/model")
         assert init.storage_uri == "https://huggingface.co/model"
 
