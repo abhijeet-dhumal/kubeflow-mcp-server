@@ -1,0 +1,79 @@
+name: E2E Test - Kubernetes
+
+# E2E provisions a large runner + Kind cluster, gated by path filters:
+#   - PRs: only when E2E-relevant paths change
+#   - push to main: always, for post-merge validation
+#   - workflow_dispatch: manual runs
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "kubeflow_mcp/**"
+      - "tests/e2e/**"
+      - "pyproject.toml"
+      - "Makefile"
+      - ".github/workflows/e2e-k8s.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E Test (Kind Cluster)
+    runs-on: cncf-ubuntu-16-64-x86
+    # Successful runs take ~35-40 min (cluster setup + tests); cap well
+    # above that so hung runs cannot hold the large runner indefinitely.
+    timeout-minutes: 50
+
+    strategy:
+      fail-fast: false
+      matrix:
+        kubernetes-version: ["1.32.3"]
+        trainer-ref: ["v2.2.1"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout Kubeflow Trainer repository
+        uses: actions/checkout@v7
+        with:
+          repository: kubeflow/trainer
+          ref: ${{ matrix.trainer-ref }}
+          path: trainer
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Synchronize dependencies
+        run: uv sync --all-extras --group dev
+
+      - name: Setup cluster
+        run: |
+          cd ./trainer
+          make test-e2e-setup-cluster \
+            K8S_VERSION=${{ matrix.kubernetes-version }}
+          kubectl get clustertrainingruntimes
+
+      - name: Run E2E Tests
+        env:
+          KUBEFLOW_MCP_E2E: "true"
+        run: |
+          uv run pytest tests/e2e/test_kubernetes_e2e.py -v
