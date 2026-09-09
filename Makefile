@@ -132,12 +132,12 @@ release: install-dev ## Create a release commit. Usage: make release VERSION=X.Y
 		echo "Error: server.json not found (required for MCP Registry metadata)"; \
 		exit 1; \
 	fi
-	@$(SED) -i 's/^__version__ = ".*"/__version__ = "$(VERSION)"/' kubeflow_mcp/__init__.py
-	@echo "Version bumped to $(VERSION) in kubeflow_mcp/__init__.py"
-	@$(SED) -E -i 's/"version": "[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?"/"version": "$(VERSION)"/g' server.json
-	@echo "Version bumped to $(VERSION) in server.json"
 	@if echo "$(VERSION)" | grep -E -q 'rc[0-9]+$$'; then \
 		echo "Skipping changelog generation for RC release $(VERSION)"; \
+		$(SED) -i 's/^__version__ = ".*"/__version__ = "$(VERSION)"/' kubeflow_mcp/__init__.py; \
+		echo "Version bumped to $(VERSION) in kubeflow_mcp/__init__.py"; \
+		$(SED) -E -i 's/"version": "[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?"/"version": "$(VERSION)"/g' server.json; \
+		echo "Version bumped to $(VERSION) in server.json"; \
 	else \
 		git fetch upstream --tags --prune; \
 		MAJOR_MINOR=$$(echo "$(VERSION)" | cut -d. -f1,2); \
@@ -163,13 +163,36 @@ release: install-dev ## Create a release commit. Usage: make release VERSION=X.Y
 			echo "Error: cannot determine the previous release tag for $(VERSION)"; \
 			exit 1; \
 		fi; \
-		echo "Generating changelog for $(VERSION) (range: $$PREV_TAG..$$RELEASE_SHA)"; \
+		CLIFF_RANGE="$$PREV_TAG..$$RELEASE_SHA"; \
+		CLIFF_OFFLINE=; \
+		if [ "$$(git rev-list --count "$$CLIFF_RANGE" 2>/dev/null || echo 0)" -eq 0 ]; then \
+			PREV_SHA=$$(git log upstream/main --grep "release $$PREV_TAG" -1 --format=%H 2>/dev/null || true); \
+			if [ -z "$$PREV_SHA" ]; then \
+				echo "Error: empty SDK range $$CLIFF_RANGE and no 'release $$PREV_TAG' commit on upstream/main"; \
+				exit 1; \
+			fi; \
+			CLIFF_RANGE="$$PREV_SHA..$$(git rev-parse HEAD)"; \
+			CLIFF_OFFLINE=--offline; \
+			echo "Stale release branch; using $$CLIFF_RANGE (--offline)"; \
+		fi; \
+		echo "Generating changelog for $(VERSION) (range: $$CLIFF_RANGE)"; \
 		mkdir -p CHANGELOG; \
 		touch "$$CHANGELOG_PATH"; \
-		docker run --rm -u $$(id -u):$$(id -g) -e HOME=/tmp -e GITHUB_TOKEN \
-			-v $(PROJECT_DIR):/app -w /app ghcr.io/orhun/git-cliff/git-cliff:latest \
-			"$$PREV_TAG..$$RELEASE_SHA" --tag $(VERSION) --prepend "$$CHANGELOG_PATH" && \
-		echo "Changelog generated at $$CHANGELOG_PATH"; \
+		if command -v docker >/dev/null 2>&1; then \
+			docker run --rm -u $$(id -u):$$(id -g) -e HOME=/tmp -e GITHUB_TOKEN \
+				-v $(PROJECT_DIR):/app -w /app ghcr.io/orhun/git-cliff/git-cliff:latest \
+				$$CLIFF_OFFLINE --tag $(VERSION) --prepend "$$CHANGELOG_PATH" -- "$$CLIFF_RANGE"; \
+		elif command -v git-cliff >/dev/null 2>&1; then \
+			GITHUB_TOKEN="$$GITHUB_TOKEN" git-cliff $$CLIFF_OFFLINE --tag $(VERSION) --prepend "$$CHANGELOG_PATH" -- "$$CLIFF_RANGE"; \
+		else \
+			echo "Error: changelog generation requires docker or git-cliff in PATH"; \
+			exit 1; \
+		fi && \
+		echo "Changelog generated at $$CHANGELOG_PATH" && \
+		$(SED) -i 's/^__version__ = ".*"/__version__ = "$(VERSION)"/' kubeflow_mcp/__init__.py && \
+		echo "Version bumped to $(VERSION) in kubeflow_mcp/__init__.py" && \
+		$(SED) -E -i 's/"version": "[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?"/"version": "$(VERSION)"/g' server.json && \
+		echo "Version bumped to $(VERSION) in server.json"; \
 	fi
 	@echo ""
 	@echo "Release commit for $(VERSION) is ready."
