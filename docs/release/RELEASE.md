@@ -11,8 +11,10 @@ you bump the version locally, open a PR, and merging it drives the rest automati
 
 - [Write](https://docs.github.com/en/organizations/managing-access-to-your-organizations-repositories/repository-permission-levels-for-an-organization#permission-levels-for-repositories-owned-by-an-organization)
   permission for the repository.
-- **Docker** available locally (required for changelog generation; see
+- **Docker** or **`git-cliff`** available locally for changelog generation
+  (`make release` tries `docker`, then host `git-cliff`; see
   [Kubeflow SDK release docs](https://github.com/kubeflow/sdk/blob/main/RELEASE.md)).
+  On macOS without Docker, install git-cliff with Homebrew: `brew install git-cliff`.
 - A [GitHub token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
   exported as `GITHUB_TOKEN` — `make release` uses it so `git-cliff` can attribute
   changelog entries to their pull requests and authors.
@@ -81,7 +83,6 @@ This updates:
 - `server.json` → top-level and PyPI package `version` fields (MCP Registry metadata)
 - `CHANGELOG/CHANGELOG-X.Y.md` → a new top entry `# [X.Y.Z] (YYYY-MM-DD)`
   (skipped for `rcN`)
-
 ### 2. Open a pull request
 
 - Review `kubeflow_mcp/__init__.py`, `server.json`, and `CHANGELOG/CHANGELOG-X.Y.md`.
