@@ -38,6 +38,8 @@ MAX_LOG_LINES = 1000
 MAX_EVENT_LIMIT = 500
 MAX_WAIT_TIMEOUT = 3600
 MIN_POLLING_INTERVAL = 1
+_TARGET_STATUS_ALIASES = {"Succeeded": "Complete"}
+_VALID_TARGET_STATUSES = frozenset({"Complete", "Failed", "Running", "Created"})
 
 
 def _is_pod_for_step(pod: Any, step: str) -> bool:
@@ -260,8 +262,8 @@ def wait_for_training(
     Args:
         name: TrainJob name.
         target_statuses: Status string or list of status strings to wait for.
-            Valid values: ``Complete``, ``Failed``, ``Running``, ``Created``,
-            ``Suspended``. Pass a list to stop on the first match, e.g.
+            Valid values: ``Complete``, ``Failed``, ``Running``, ``Created``.
+            Pass a list to stop on the first match, e.g.
             ``["Complete", "Failed"]``. Defaults to ``"Complete"``.
         namespace: K8s namespace. Uses default from kubeconfig when omitted.
         timeout_seconds: Maximum wait time in seconds. Defaults to 600 (10 min).
@@ -283,6 +285,32 @@ def wait_for_training(
     if ns_err is not None:
         return ns_err.model_dump()
 
+    if isinstance(target_statuses, str):
+        raw_statuses = [target_statuses]
+    elif isinstance(target_statuses, list) and all(
+        isinstance(status, str) for status in target_statuses
+    ):
+        raw_statuses = target_statuses
+    else:
+        return ToolError(
+            error="target_statuses must be a string or a list of strings",
+            error_code=ErrorCode.VALIDATION_ERROR,
+        ).model_dump()
+
+    if not raw_statuses:
+        return ToolError(
+            error="target_statuses must contain at least one status",
+            error_code=ErrorCode.VALIDATION_ERROR,
+        ).model_dump()
+
+    status_set = {_TARGET_STATUS_ALIASES.get(status, status) for status in raw_statuses}
+    invalid_statuses = sorted(status_set - _VALID_TARGET_STATUSES)
+    if invalid_statuses:
+        return ToolError(
+            error=f"Unsupported target status(es): {', '.join(invalid_statuses)}",
+            error_code=ErrorCode.VALIDATION_ERROR,
+        ).model_dump()
+
     try:
         if timeout_seconds < 1:
             return ToolError(
@@ -297,10 +325,6 @@ def wait_for_training(
         timeout_seconds = min(timeout_seconds, MAX_WAIT_TIMEOUT)
         polling_interval = max(polling_interval, MIN_POLLING_INTERVAL)
         client = get_trainer_client_for_namespace(namespace)
-
-        aliases = {"Succeeded": "Complete"}
-        raw = set(target_statuses) if isinstance(target_statuses, list) else {target_statuses}
-        status_set = {aliases.get(s, s) for s in raw}
 
         job = client.wait_for_job_status(
             name=name,
