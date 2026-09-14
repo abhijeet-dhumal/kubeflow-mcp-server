@@ -144,49 +144,33 @@ release: install-dev ## Create a release commit. Usage: make release VERSION=X.Y
 		CHANGELOG_PATH="CHANGELOG/CHANGELOG-$$MAJOR_MINOR.md"; \
 		RELEASE_BRANCH="release-$$MAJOR_MINOR"; \
 		RELEASE_SHA=$$(git rev-parse --verify --quiet "refs/remotes/upstream/$$RELEASE_BRANCH" || true); \
-		if [ -z "$$RELEASE_SHA" ]; then \
-			if [ -f "$$CHANGELOG_PATH" ]; then \
-				echo "Error: branch $$RELEASE_BRANCH not found on upstream, but $$CHANGELOG_PATH exists. Run: git fetch upstream $$RELEASE_BRANCH"; \
-				exit 1; \
+		if [ -n "$$RELEASE_SHA" ]; then \
+			PREV_TAG=$$(git describe --tags --abbrev=0 --match '[0-9]*' --exclude '*rc*' "$$RELEASE_SHA" 2>/dev/null || true); \
+			if [ -n "$$PREV_TAG" ]; then \
+				CLIFF_SCOPE="$$PREV_TAG..$$RELEASE_SHA"; \
+				echo "Generating changelog for $(VERSION) (range: $$PREV_TAG..$$RELEASE_BRANCH @ $$RELEASE_SHA)"; \
+			else \
+				CLIFF_SCOPE=--unreleased; \
+				echo "Generating changelog for $(VERSION) (no prior tag on $$RELEASE_BRANCH; using --unreleased)"; \
 			fi; \
-			RELEASE_SHA=$$(git rev-parse HEAD); \
-			echo "Branch $$RELEASE_BRANCH does not exist yet (new release line $$MAJOR_MINOR, created by the release workflow); using HEAD"; \
-		fi; \
-		PATCH=$$(echo "$(VERSION)" | cut -d. -f3); \
-		if [ "$$PATCH" -gt 0 ]; then \
-			PREV_TAG="$$(echo "$(VERSION)" | cut -d. -f1,2).$$((PATCH - 1))"; \
+		elif [ ! -f "$$CHANGELOG_PATH" ]; then \
+			CLIFF_SCOPE=--unreleased; \
+			echo "Generating changelog for $(VERSION) (new release line $$MAJOR_MINOR, branch $$RELEASE_BRANCH not created yet; using --unreleased)"; \
 		else \
-			PREV_MINOR=$$(( $$(echo "$(VERSION)" | cut -d. -f2) - 1 )); \
-			PREV_TAG=$$(git tag --list "$$(echo "$(VERSION)" | cut -d. -f1).$$PREV_MINOR.*" | grep -vE -- '(rc)' | sort -t. -k3,3nr | head -1 || true); \
-		fi; \
-		if [ -z "$$PREV_TAG" ]; then \
-			echo "Error: cannot determine the previous release tag for $(VERSION)"; \
+			echo "Error: branch $$RELEASE_BRANCH not found locally or on upstream, but $$CHANGELOG_PATH exists."; \
+			echo "Run: git fetch upstream $$RELEASE_BRANCH"; \
 			exit 1; \
 		fi; \
-		CLIFF_RANGE="$$PREV_TAG..$$RELEASE_SHA"; \
-		CLIFF_OFFLINE=; \
-		if [ "$$(git rev-list --count "$$CLIFF_RANGE" 2>/dev/null || echo 0)" -eq 0 ]; then \
-			PREV_SHA=$$(git log upstream/main --grep "release $$PREV_TAG" -1 --format=%H 2>/dev/null || true); \
-			if [ -z "$$PREV_SHA" ]; then \
-				echo "Error: empty SDK range $$CLIFF_RANGE and no 'release $$PREV_TAG' commit on upstream/main"; \
-				exit 1; \
-			fi; \
-			CLIFF_RANGE="$$PREV_SHA..$$(git rev-parse HEAD)"; \
-			CLIFF_OFFLINE=--offline; \
-			echo "Stale release branch; using $$CLIFF_RANGE (--offline)"; \
+		CLIFF_CMD="docker run --rm -u $$(id -u):$$(id -g) -v $(PROJECT_DIR):/app"; \
+		if [ -n "$(GITHUB_TOKEN)" ]; then \
+			CLIFF_CMD="$$CLIFF_CMD -e GITHUB_TOKEN=$(GITHUB_TOKEN)"; \
 		fi; \
-		echo "Generating changelog for $(VERSION) (range: $$CLIFF_RANGE)"; \
-		mkdir -p CHANGELOG; \
-		touch "$$CHANGELOG_PATH"; \
-		if command -v docker >/dev/null 2>&1; then \
-			docker run --rm -u $$(id -u):$$(id -g) -e HOME=/tmp -e GITHUB_TOKEN \
-				-v $(PROJECT_DIR):/app -w /app ghcr.io/orhun/git-cliff/git-cliff:latest \
-				$$CLIFF_OFFLINE --tag $(VERSION) --prepend "$$CHANGELOG_PATH" -- "$$CLIFF_RANGE"; \
-		elif command -v git-cliff >/dev/null 2>&1; then \
-			GITHUB_TOKEN="$$GITHUB_TOKEN" git-cliff $$CLIFF_OFFLINE --tag $(VERSION) --prepend "$$CHANGELOG_PATH" -- "$$CLIFF_RANGE"; \
+		CLIFF_CMD="$$CLIFF_CMD -w /app ghcr.io/orhun/git-cliff/git-cliff:latest $$CLIFF_SCOPE --tag $(VERSION)"; \
+		if [ -f "$$CHANGELOG_PATH" ]; then \
+			$$CLIFF_CMD --prepend "$$CHANGELOG_PATH"; \
 		else \
-			echo "Error: changelog generation requires docker or git-cliff in PATH"; \
-			exit 1; \
+			$$CLIFF_CMD -o "$$CHANGELOG_PATH"; \
+			printf '%s\n' "$$(cat "$$CHANGELOG_PATH")" > "$$CHANGELOG_PATH"; \
 		fi && \
 		echo "Changelog generated at $$CHANGELOG_PATH" && \
 		$(SED) -i 's/^__version__ = ".*"/__version__ = "$(VERSION)"/' kubeflow_mcp/__init__.py && \

@@ -11,10 +11,9 @@ you bump the version locally, open a PR, and merging it drives the rest automati
 
 - [Write](https://docs.github.com/en/organizations/managing-access-to-your-organizations-repositories/repository-permission-levels-for-an-organization#permission-levels-for-repositories-owned-by-an-organization)
   permission for the repository.
-- **Docker** or **`git-cliff`** available locally for changelog generation
-  (`make release` tries `docker`, then host `git-cliff`; see
-  [Kubeflow SDK release docs](https://github.com/kubeflow/sdk/blob/main/RELEASE.md)).
-  On macOS without Docker, install git-cliff with Homebrew: `brew install git-cliff`.
+- **Docker** available locally for changelog generation
+  (`make release` uses the same `git-cliff` container flow as the
+  [Kubeflow Trainer release process](https://github.com/kubeflow/trainer/blob/master/Makefile#L308)).
 - A [GitHub token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
   exported as `GITHUB_TOKEN` — `make release` uses it so `git-cliff` can attribute
   changelog entries to their pull requests and authors.

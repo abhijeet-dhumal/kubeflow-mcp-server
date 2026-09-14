@@ -296,11 +296,18 @@ def _check_sdk_version(checks: dict[str, dict[str, Any]], blockers: list[str]) -
     except importlib.metadata.PackageNotFoundError:
         try:
             sdk_version = importlib.metadata.version("kubeflow")
+            from packaging.version import Version
+
+            sdk_min = KUBEFLOW_SDK_VERSION_MIN
+            sdk_ok = Version(sdk_version) >= Version(sdk_min)
             checks["kubeflow_sdk"] = {
-                "status": "pass",
+                "status": "pass" if sdk_ok else "fail",
                 "version": sdk_version,
+                "minimum": sdk_min,
                 "package": "kubeflow",
             }
+            if not sdk_ok:
+                blockers.append(f"kubeflow {sdk_version} is below minimum {sdk_min}")
         except importlib.metadata.PackageNotFoundError:
             checks["kubeflow_sdk"] = {"status": "fail", "error": "Not installed"}
             blockers.append("kubeflow-trainer not installed (pip install kubeflow-trainer)")
