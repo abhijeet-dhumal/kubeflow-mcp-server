@@ -155,7 +155,7 @@ def get_training_logs(
             data["failure_hint"] = hint
             data["next_steps"] = [
                 f"Detected {hint['category']}: {hint['suggestion']}",
-                "Read trainer://workflows/ops for detailed fixes",
+                "Read trainer://guides/troubleshooting for detailed fixes",
             ]
 
         return ToolResponse(data=data).model_dump()
@@ -171,7 +171,7 @@ def get_training_logs(
         return ToolError(
             error=str(e),
             error_code=ErrorCode.SDK_ERROR,
-            hint="Read trainer://workflows/ops",
+            hint="Read trainer://guides/troubleshooting",
             details=exception_details(e),
         ).model_dump()
 
@@ -241,7 +241,7 @@ def get_training_events(
         return ToolError(
             error=str(e),
             error_code=ErrorCode.SDK_ERROR,
-            hint="Read trainer://workflows/ops",
+            hint="Read trainer://guides/troubleshooting",
             details=exception_details(e),
         ).model_dump()
 
@@ -333,6 +333,6 @@ def wait_for_training(
         return ToolError(
             error=str(e),
             error_code=ErrorCode.SDK_ERROR,
-            hint="Read trainer://workflows/ops",
+            hint="Read trainer://guides/troubleshooting",
             details=exception_details(e),
         ).model_dump()
