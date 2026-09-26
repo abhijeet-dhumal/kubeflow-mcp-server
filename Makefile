@@ -19,6 +19,10 @@ SHELL = /usr/bin/env bash -o pipefail
 
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
 
+# Export credentials to recipes and recursive make invocations without placing
+# their values in command-line arguments.
+export GITHUB_TOKEN
+
 # Setting SED for compatibility with macos
 ifeq ($(shell command -v gsed 2>/dev/null),)
     SED ?= $(shell command -v sed)
@@ -141,7 +145,7 @@ release: install-dev ## Create a release commit. Usage: make release VERSION=X.Y
 		$(SED) -E -i 's/"version": "[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?"/"version": "$(VERSION)"/g' server.json; \
 		echo "Version bumped to $(VERSION) in server.json"; \
 	else \
-		$(MAKE) changelog VERSION=$(VERSION) GITHUB_TOKEN="$(GITHUB_TOKEN)"; \
+		$(MAKE) changelog VERSION=$(VERSION); \
 		$(SED) -i 's/^__version__ = ".*"/__version__ = "$(VERSION)"/' kubeflow_mcp/__init__.py && \
 		echo "Version bumped to $(VERSION) in kubeflow_mcp/__init__.py" && \
 		$(SED) -E -i 's/"version": "[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?"/"version": "$(VERSION)"/g' server.json && \
@@ -183,8 +187,8 @@ changelog: ## Generate changelog. Usage: make changelog VERSION=X.Y.Z [DRY_RUN=1
 	done; \
 	if [ -z "$$PREV_TAG" ]; then \
 		PREV_REF=""; \
-		CLIFF_SCOPE="HEAD"; \
-		echo "No older stable release tag found; using full repository history"; \
+		CLIFF_SCOPE="--unreleased"; \
+		echo "No older stable release tag found; using unreleased commits"; \
 	else \
 		if ! git rev-parse --verify --quiet "refs/tags/$$PREV_TAG" >/dev/null; then \
 			echo "Error: selected stable release tag is unavailable: $$PREV_TAG"; \
@@ -205,8 +209,8 @@ changelog: ## Generate changelog. Usage: make changelog VERSION=X.Y.Z [DRY_RUN=1
 	CONTAINER_USER_ARGS="-u $$(id -u):$$(id -g)"; \
 	if [ "$(CONTAINER_RUNTIME)" = "podman" ]; then CONTAINER_USER_ARGS=""; fi; \
 	CLIFF_CMD="$(CONTAINER_RUNTIME) run --rm $$CONTAINER_USER_ARGS -v $(PROJECT_DIR):/app"; \
-	if [ -n "$(GITHUB_TOKEN)" ]; then \
-		CLIFF_CMD="$$CLIFF_CMD -e GITHUB_TOKEN=$(GITHUB_TOKEN)"; \
+	if [ -n "$${GITHUB_TOKEN:-}" ]; then \
+		CLIFF_CMD="$$CLIFF_CMD -e GITHUB_TOKEN"; \
 	fi; \
 	CLIFF_OFFLINE=""; \
 	if [ "$(OFFLINE)" = "1" ]; then CLIFF_OFFLINE="--offline"; fi; \

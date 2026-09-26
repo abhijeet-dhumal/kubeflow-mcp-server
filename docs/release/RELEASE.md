@@ -23,7 +23,8 @@ For local dry-runs from commits that are not pushed to GitHub, add `OFFLINE=1` t
 Export the token and run:
 
 ```bash
-make release VERSION=X.Y.Z GITHUB_TOKEN="$GITHUB_TOKEN"
+export GITHUB_TOKEN
+make release VERSION=X.Y.Z
 ```
 
 This updates the package version, `server.json`, and the changelog. Review the changes, then open a signed PR against `main` or the appropriate release branch.
