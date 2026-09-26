@@ -129,9 +129,9 @@ endif
 CONTAINER_RUNTIME ?= docker
 
 .PHONY: release changelog
-release: install-dev ## Create a release commit. Usage: make release VERSION=X.Y.Z GITHUB_TOKEN=<token>
+release: install-dev ## Create a release commit. Usage: export GITHUB_TOKEN=<token> && make release VERSION=X.Y.Z
 	@if [ -z "$(VERSION)" ] || ! echo "$(VERSION)" | grep -E -q '^[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?$$'; then \
-		echo "Error: VERSION must be set in X.Y.Z or X.Y.ZrcN format. Usage: make release VERSION=X.Y.Z[rcN] GITHUB_TOKEN=<token>"; \
+		echo "Error: VERSION must be set in X.Y.Z or X.Y.ZrcN format. Usage: export GITHUB_TOKEN=<token> && make release VERSION=X.Y.Z[rcN]"; \
 		exit 1; \
 	fi
 	@if [ ! -f server.json ]; then \
