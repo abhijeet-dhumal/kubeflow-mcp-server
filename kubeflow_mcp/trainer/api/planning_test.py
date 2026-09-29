@@ -22,6 +22,7 @@ import pytest
 from huggingface_hub.errors import RepositoryNotFoundError
 from tests.common import TestCase
 
+from kubeflow_mcp.common.constants import KUBEFLOW_SDK_VERSION_SPEC
 from kubeflow_mcp.trainer.api.planning import (
     _check_sdk_version,
     _estimate_from_params,
@@ -41,9 +42,11 @@ def test_check_sdk_version_rejects_sdk_outside_supported_range():
     assert checks["kubeflow_sdk"] == {
         "status": "fail",
         "version": "0.4.0",
-        "required": ">=0.5.0,<0.6.0",
+        "required": KUBEFLOW_SDK_VERSION_SPEC,
     }
-    assert blockers == ["kubeflow 0.4.0 is installed; kubeflow-mcp requires kubeflow>=0.5.0,<0.6.0"]
+    assert blockers == [
+        f"kubeflow 0.4.0 is installed; kubeflow-mcp requires kubeflow{KUBEFLOW_SDK_VERSION_SPEC}"
+    ]
 
 
 def _fake_models(*ids):
