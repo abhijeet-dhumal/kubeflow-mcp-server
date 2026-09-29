@@ -14,7 +14,6 @@
 
 """Tests for planning helpers: HuggingFace model ID validation and suggestions."""
 
-from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -33,22 +32,18 @@ from kubeflow_mcp.trainer.api.planning import (
 )
 
 
-def test_check_sdk_version_enforces_minimum_for_legacy_package():
+def test_check_sdk_version_rejects_sdk_outside_supported_range():
     checks = {}
     blockers = []
-    with patch(
-        "importlib.metadata.version",
-        side_effect=[PackageNotFoundError, "0.4.0"],
-    ):
+    with patch("importlib.metadata.version", return_value="0.4.0"):
         _check_sdk_version(checks, blockers)
 
     assert checks["kubeflow_sdk"] == {
         "status": "fail",
         "version": "0.4.0",
-        "minimum": "0.4.1",
-        "package": "kubeflow",
+        "required": ">=0.5.0,<0.6.0",
     }
-    assert blockers == ["kubeflow 0.4.0 is below minimum 0.4.1"]
+    assert blockers == ["kubeflow 0.4.0 is installed; kubeflow-mcp requires kubeflow>=0.5.0,<0.6.0"]
 
 
 def _fake_models(*ids):
