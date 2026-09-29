@@ -571,7 +571,11 @@ def test_inject_trainer_hf_home_concurrent_isolation():
         image="test:latest",
     )
     runtime_trainer.set_command(("torchrun",))
-    runtime = sdk_types.Runtime(name="test-rt", trainer=runtime_trainer)
+    runtime = sdk_types.Runtime(
+        name="test-rt",
+        trainer=runtime_trainer,
+        kind=sdk_types.RuntimeKind.CLUSTER_TRAINING_RUNTIME,
+    )
     builtin = sdk_types.BuiltinTrainer(config=sdk_types.TorchTuneConfig(batch_size=4, epochs=1))
 
     barrier = threading.Barrier(4)
