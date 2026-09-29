@@ -36,6 +36,7 @@ dev = [
     "pytest-benchmark>=5.2.3",
     "pytest-cov>=4.0",
     "ruff>=0.9",
+    "httpx2>=2.13.1",
 ]
 docs = [
     "sphinx>=7.0",

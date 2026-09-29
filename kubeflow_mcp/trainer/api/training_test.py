@@ -74,7 +74,8 @@ PATCH_GPU_CHECK = "kubeflow_mcp.trainer.api.training._check_gpu_available"
     ],
 )
 def test_fine_tune_validation(test_case):
-    assert_test_case(test_case, fine_tune)
+    with patch(PATCH_GPU_CHECK, return_value=None):
+        assert_test_case(test_case, fine_tune)
 
 
 class TestFineTuneConfirmed:
@@ -207,7 +208,8 @@ class TestFineTuneConfirmed:
         assert result["success"] is False
         assert "GPU" in result["error"]
 
-    def test_non_torchtune_runtime_rejected(self):
+    @patch(PATCH_GPU_CHECK, return_value=None)
+    def test_non_torchtune_runtime_rejected(self, _gpu):
         result = fine_tune(
             model="hf://org/model",
             dataset="hf://org/ds",
