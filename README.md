@@ -19,6 +19,19 @@ The Kubeflow MCP Server exposes Kubeflow operations as [Model Context Protocol (
 - **Token-Efficient**: Progressive and semantic tool modes compress tools into 2–3 meta-tools
 - **Modular Clients**: Load only what you need (`trainer`, `spark`, `pipelines`; planned: `optimizer`, `hub`)
 
+## Agent Skills
+
+[Agent Skills catalog](docs/skills/catalog.md): a skeleton for independently released skill
+plugins. Register the catalog from GitHub:
+
+```bash
+# Claude Code
+claude plugin marketplace add kubeflow/mcp-server
+
+# Codex CLI
+codex plugin marketplace add kubeflow/mcp-server
+```
+
 ## Demo
 
 [![Kubeflow MCP Server](https://img.youtube.com/vi/cZ2BP5hQjc8/0.jpg)](https://youtu.be/cZ2BP5hQjc8)
